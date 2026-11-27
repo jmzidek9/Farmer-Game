@@ -10,11 +10,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 N, STEP, OFF = 401, 1.0, -200.0
 FARM, FZ0, FZ1 = 40, 0, 80                 # farm grid x in [-40, 40], z in [0, 80] (unchanged: saves are by tile)
 C0 = (0.0, -8.0)                           # island centre
-MC = (68.0, -88.0)                         # mountain summit
-MTOP = 84.0
-RIVER_Z0 = -46.0
+MC = (88.0, -80.0)                         # mountain summit
+MTOP = 104.0
+RIVER_Z0 = -52.0
 PIER = (-54.0, 0.0)                        # pier x; its land end z is found on the beach below
-WRECK = (24.0, 136.0)
+WRECK = (30.0, 124.0)
 
 
 def smooth(a, b, x):
@@ -59,34 +59,35 @@ def mountain(X, Z):
     dx, dz = X - MC[0], Z - MC[1]
     r, th = np.hypot(dx, dz), np.arctan2(dz, dx)
     th = th + (fbm(X * 0.03 + 5, Z * 0.03 + 1) - 0.5) * 1.0
-    R = 84 + 10 * np.sin(2 * th + 0.6) + 6 * np.sin(3 * th + 1.0) + 3 * np.sin(5 * th + 2.0)
+    R = 98 + 10 * np.sin(2 * th + 0.6) + 6 * np.sin(3 * th + 1.0) + 3 * np.sin(5 * th + 2.0)
     u = r / R
-    base = 1 - smooth(0.0, 1.0, u ** 0.8)
+    base = np.clip(1 - u, 0, 1) ** 1.3          # a cone: broad foot, pointed summit
     ridge = 1 - np.abs(2 * fbm(X * 0.05 + 11, Z * 0.05 - 4) - 1)
     crag = (fbm(X * 0.16 - 3, Z * 0.16 + 9) - 0.5) + (fbm(X * 0.4 + 1, Z * 0.4 - 6) - 0.5) * 0.4
     m = MTOP * base * (0.74 + 0.3 * ridge) + crag * 7 * np.minimum(1.0, base * 2.5)
-    m += 16 * np.exp(-(np.hypot(dx + 3, dz + 4) / 8) ** 2)           # the summit crag
-    m += 26 * np.exp(-(np.hypot(dx + 32, dz + 12) / 13) ** 2)        # west shoulder
-    m += 18 * np.exp(-(np.hypot(dx - 26, dz - 10) / 11) ** 2)        # east shoulder
+    m += 12 * np.exp(-(np.hypot(dx + 2, dz + 3) / 6) ** 2)           # the summit crag
+    m += 14 * np.exp(-(np.hypot(dx + 28, dz + 6) / 12) ** 2)         # west shoulder
+    m += 10 * np.exp(-(np.hypot(dx - 20, dz - 14) / 10) ** 2)        # east shoulder
     # terraces: ~7 m bands, flat ledge then a near-vertical riser; the band edges wander so they read as strata
-    S = 15.0
+    S = 11.0
     warp = (fbm(X * 0.035 - 20, Z * 0.035 + 8) - 0.5) * 2.6 + (fbm(X * 0.11 + 4, Z * 0.11 - 9) - 0.5) * 0.6
     k = m / S + warp
     f = k - np.floor(k)
-    terr = S * (np.floor(k) + smooth(0.84, 1.0, f))   # ledges stay level: the warp only moves where the cliffs fall
+    terr = S * (np.floor(k) + smooth(0.6, 0.97, f))   # ledges stay level: the warp only moves where the cliffs fall
     w = smooth(4, 12, m) * (1 - smooth(MTOP + 10, MTOP + 30, m) * 0.6)
     return m * (1 - w) + terr * w
 
 
 def river_x(z):
     k = smooth(0, -20, z)
-    return 31 + 0.5 * np.sin(z * 0.15) * (1 - k) + k * (7 * np.sin(z * 0.06 + 0.4) + 2.5 * np.sin(z * 0.17 + 1.1))
+    s = 1 - smooth(-50, -14, z)                 # north of the farm the river swings east to the falls
+    return 31 + 0.5 * np.sin(z * 0.15) * (1 - k) + k * (3 * np.sin(z * 0.17 + 1.1) + 21 * s)
 
 
 P0 = (float(river_x(np.array(RIVER_Z0))), RIVER_Z0)   # spring pool centre, the waterfall's plunge pool
 _d = (MC[0] - P0[0], MC[1] - P0[1])
 FALL_DIR = (_d[0] / math.hypot(*_d), _d[1] / math.hypot(*_d))   # from the pool toward the summit
-LIP_ALONG, LIP_H = 12.5, 24.0                                   # the cliff the waterfall drops over
+LIP_ALONG, LIP_H = 12.5, 30.0                                   # the cliff the waterfall drops over
 
 
 def falls(X, Z, h):
@@ -116,8 +117,8 @@ def H0(X, Z):
     # sea: glassy shallows, a broad reef shelf with coral heads and sand channels, then the drop to deep blue
     off = -dC
     reef = (fbm(X * 0.07 + 9, Z * 0.07 - 3) - 0.5) * 1.6 + (fbm(X * 0.3, Z * 0.3) - 0.5) * 0.5
-    shelf = -1.3 * smooth(0, 9, off) - 1.3 * smooth(9, 46, off) + reef * smooth(6, 14, off) * (1 - smooth(40, 52, off))
-    deep = -15 * smooth(46, 70, off)
+    shelf = -1.3 * smooth(0, 7, off) - 1.2 * smooth(7, 30, off) + reef * smooth(5, 12, off) * (1 - smooth(25, 34, off))
+    deep = -15 * smooth(30, 48, off)
     sea = np.minimum(shelf + deep, 0.42)
     h = np.where(dC < 0, sea + 0.0 * dC, h)
     h = np.where((dC >= 0) & (dC < 3), np.minimum(h, 0.62 * smooth(0, wb * 0.7, dC) + 0.0), h)
@@ -144,7 +145,7 @@ def water(X, Z, h):
     rx0 = P0[0]
     inR = (Z > RIVER_Z0 - 12) & (Z < 130)
     d = np.where(Z >= RIVER_Z0, np.abs(X - river_x(Z)), np.hypot(X - rx0, Z - RIVER_Z0))
-    h = np.where(inR, bank(h, d, 1.0, np.where(Z > -2, 5.0, 6.5), -1.2), h)
+    h = np.where(inR, bank(h, d, 1.3, np.where(Z > -2, 7.5, 8.5), -1.2), h)   # wide, grassy banks
     dp, a = np.hypot(X - rx0, Z - RIVER_Z0), np.arctan2(Z - RIVER_Z0, X - rx0)
     rp = 12.0 + 1.2 * np.sin(2 * a + 0.7) + 0.7 * np.sin(3 * a + 2.0)
     h = np.where(inR, bank(h, dp / rp, 0.55, 1.12, -1.6, 0.0), h)
@@ -174,8 +175,8 @@ def graded(pts, passes=60):
 
 
 def trail():
-    foot = (6.0, -62.0)
-    lead = graded(polyline([(-8.0, -3.0), (-9.0, -22.0), (-4.0, -42.0), foot]))
+    foot = (30.0, -92.0)
+    lead = graded(polyline([(-8.0, -3.0), (-8.0, -30.0), (5.0, -62.0), foot]))
     a = math.atan2(foot[1] - MC[1], foot[0] - MC[0])
     r = math.hypot(foot[0] - MC[0], foot[1] - MC[1])
     y, y1, G = H0s(*foot), H0s(*MC) - 4.0, 0.14
@@ -251,14 +252,15 @@ def main():
     p = np.maximum(p, 1 - smooth(3.5, 5.0, ds))
     # dirt tracks: pier -> farm's south-west corner, and the farm's east edge -> the shop hut (colour only, no cut)
     pz = beach_z(PIER[0])
-    tracks = [polyline([(-54, 78), (-48, 72), (-42, 64)]), polyline([(41, 40), (48, 38), (55, 36)])]
+    tracks = [polyline([(-54, 78), (-48, 72), (-42, 64)]), polyline([(41, 40), (48, 38), (55, 36)]),
+              polyline([(20, -2), (27, -22), (34, -38), (40, -48)])]   # pier, shop hut, and up the river to the falls
     for tr in tracks:
         dd, _ = seg_dist(X, Z, [[a, b, 0] for a, b in tr])
         wav = (fbm(X * 0.3, Z * 0.3) - 0.5) * 0.6
-        p = np.maximum(p, (1 - smooth(1.0, 1.9, dd + wav)) * 0.85)
+        p = np.maximum(p, (1 - smooth(1.4, 2.6, dd + wav)) * 0.7)
     h = water(X, Z, h)
     dw = np.hypot(X - WRECK[0], Z - WRECK[1])      # the reef the wreck sits on
-    h = np.where(dw < 9, np.maximum(h, -0.6 - dw * 0.12), h)
+    h = np.maximum(h, -0.6 - dw * 0.12 - 14 * smooth(7, 16, dw))   # a rocky reef rising to just under the surface
     h = np.round(h, 3)
     p = np.round(np.clip(p, 0, 1), 2)
 

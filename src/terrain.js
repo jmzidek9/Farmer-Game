@@ -19,9 +19,10 @@ export function pathAt(x, z) {
   const i = Math.round((x - off) / step), j = Math.round((z - off) / step);
   return i < 0 || j < 0 || i >= n || j >= n ? 0 : p[j * n + i];
 }
-// river centre line (same formula as river_x in tools/make_models.py); it runs from z = RIVER_Z0 to the sea
-export const RIVER_Z0 = -46;
+// river centre line (same formula as river_x in tools/make_island.py); it runs from z = RIVER_Z0 to the sea
+export const RIVER_Z0 = -52;
 export function riverX(z) {
   const k = z >= 0 ? 0 : z <= -20 ? 1 : (t => t * t * (3 - 2 * t))(-z / 20);
-  return 31 + 0.5 * Math.sin(z * 0.15) * (1 - k) + k * (7 * Math.sin(z * 0.06 + 0.4) + 2.5 * Math.sin(z * 0.17 + 1.1));
+  const s = z >= -14 ? 0 : z <= -50 ? 1 : (t => t * t * (3 - 2 * t))((-14 - z) / 36);   // swings east to the falls
+  return 31 + 0.5 * Math.sin(z * 0.15) * (1 - k) + k * (3 * Math.sin(z * 0.17 + 1.1) + 21 * s);
 }

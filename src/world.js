@@ -112,7 +112,7 @@ export function createWorld(canvas, game) {
       void main(){
         vec3 d = normalize(vDir);
         float h = clamp(d.y, -0.2, 1.0);
-        vec3 col = mix(uHorizon, uZenith, pow(smoothstep(-0.05, 0.75, h), 0.7));
+        vec3 col = mix(uHorizon, uZenith, pow(smoothstep(-0.03, 0.5, h), 0.55));   // the deep blue comes down low, a pale band only at the horizon
         col = mix(col, uHorizon * 0.55, smoothstep(0.0, -0.2, d.y));
         float sd = dot(d, uSunDir);
         // sun: disc + glow, warm halo near the horizon
@@ -274,7 +274,7 @@ export function createWorld(canvas, game) {
           float rip = sin(dot(q, wd) * 4.2 + warp) * .5 + .5;
           rip = rip * rip * (1. - smoothstep(.45, .2, h)) * (1. - near * .7);
           float dune = gf(q * .09 + 5.);
-          vec3 sand = mix(vec3(.92, .83, .61), vec3(.98, .91, .74), mid * .6 + dune * .4) * (.93 + fine * .08);
+          vec3 sand = mix(vec3(.97, .87, .64), vec3(1., .94, .78), mid * .6 + dune * .4) * (.95 + fine * .07);   // warm cream, as in the art
           sand *= .93 + rip * .11;
           vec2 cell = floor(q * 6.), cf = fract(q * 6.) - .5 + (vec2(gh(cell + 3.), gh(cell + 5.)) - .5) * .5;
           float speck = step(.94, gh(cell)) * smoothstep(.16, .08, length(cf));
@@ -303,12 +303,14 @@ export function createWorld(canvas, game) {
           c = mix(c, eTex * .85, soilB);   // dark earth under the beds, fading out into the grass around a plot
           c = mix(seabed, c, smoothstep(.05, .3, h));
           float low = 1. - smoothstep(6., 24., h + (big - .5) * 10.);      // grass holds on steeper ground in the foothills
-          float rockAmt = max(smoothstep(.42 + low * .2, .6 + low * .2, slope + (mid - .5) * .2), smoothstep(22., 30., h + mid * 6.) * smoothstep(.12, .3, slope));
+          float rockAmt = max(smoothstep(.42 + low * .4, .6 + low * .45, slope + (mid - .5) * .2), smoothstep(22., 30., h + mid * 6.) * smoothstep(.38, .62, slope));   // the mountain's ledges and gentler flanks stay green
           c = mix(c, rock, rockAmt);
           // the mountain trail: packed earth with worn edges and pebbles
           float trail = smoothstep(.15, .65, vPath + (gn(q * 1.9) - .5) * .35);
           vec3 dirt = mix(vec3(.52, .4, .28), vec3(.66, .54, .38), mid) * (.88 + fine * .16);
           dirt = mix(dirt, vec3(.72, .68, .6), speck * .6) * eTex / vec3(.34, .24, .16) * .62;
+          vec3 sandy = mix(vec3(.86, .74, .52), vec3(.93, .83, .62), mid) * (.9 + fine * .12);   // meadow tracks: packed sand (path mask < 1)
+          dirt = mix(dirt, sandy, smoothstep(.86, .72, vPath) * step(h, 6.));
           c = mix(c, dirt, trail);
           rockAmt *= 1. - trail;
           // under the water: tinted by it, with rippling caustic light in the sun
@@ -327,7 +329,7 @@ export function createWorld(canvas, game) {
           dat = mix(dat, eDat, trail);
           gTexN = dat.xy * (1. - rockAmt);   // texture relief all the way down into the wash zone and the seabed
           gRough = mix(.95, max(dat.z, .82), 1. - rockAmt);   // matte: grass and dry soil barely reflect the sky
-          float wetSand = smoothstep(.55, .25, h) * sandW;      // the wash zone stays damp: darker and shiny
+          float wetSand = smoothstep(.2, .03, h) * sandW;      // the wash zone stays damp: darker and shiny
           float wet = max(wetSand, uWet * (1. - rockAmt * .5));
           c *= 1. - wet * .32;
           gRough = mix(gRough, .28, wet * .85); gWetF = wet;
@@ -424,7 +426,7 @@ export function createWorld(canvas, game) {
         return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y); }
       float ground(vec2 p){ vec2 uv = (p - uOff) / uSpan; if (any(lessThan(uv, vec2(0.))) || any(greaterThan(uv, vec2(1.)))) return -15.; return texture2D(uH, uv).r; }
       float riverX(float z){ float k = z >= 0. ? 0. : z <= -20. ? 1. : smoothstep(0., 1., -z / 20.);
-        return 31. + .5 * sin(z * .15) * (1. - k) + k * (7. * sin(z * .06 + .4) + 2.5 * sin(z * .17 + 1.1)); }
+        float s = 1. - smoothstep(-50., -14., z); return 31. + .5 * sin(z * .15) * (1. - k) + k * (3. * sin(z * .17 + 1.1) + 21. * s); }
       const mat2 R1 = mat2(.8, -.6, .6, .8);
       float rip(vec2 q, float t, float detail){
         float h = vn(q * .2 + vec2(t * .05, t * .03));
@@ -460,8 +462,8 @@ export function createWorld(canvas, game) {
         float d = max(uLevel - ground(q), 0.);
         float detail = 1. - smoothstep(25., 140., dist);
         // river flow: downstream (+z) along the river's course
-        float rx = riverX(max(q.y, -46.)), along = (riverX(q.y + 1.) - riverX(q.y - 1.)) * .5;
-        float inRiver = (1. - smoothstep(3.5, 7., abs(q.x - rx))) * step(-50., q.y) * (1. - smoothstep(76., 88., q.y));
+        float rx = riverX(max(q.y, -52.)), along = (riverX(q.y + 1.) - riverX(q.y - 1.)) * .5;
+        float inRiver = (1. - smoothstep(3.5, 7., abs(q.x - rx))) * step(-56., q.y) * (1. - smoothstep(76., 88., q.y));
         vec2 flow = normalize(vec2(along, 1.)) * inRiver * 1.4;
         // swell slope (analytic, matches the vertex waves) + ripples
         float amp = clamp(d / 4., 0.08, 1.) * (0.18 + uRough * 0.35);
@@ -476,6 +478,10 @@ export function createWorld(canvas, game) {
         vec3 body = mix(shallowC, turqC, smoothstep(0., 1.3, d));
         body = mix(body, midC, smoothstep(2.2, 4.6, d));
         body = mix(body, deepC, smoothstep(4.2, 7.2, d));
+        {   // dark reef patches showing through the turquoise shelf, as in the art
+          float reefP = smoothstep(.56, .72, vn(q * .045 + 3.) * .65 + vn(q * .14 + 9.) * .35) * smoothstep(.8, 1.7, d) * (1. - smoothstep(3.6, 6., d));
+          body = mix(body, vec3(.0, .28, .42), reefP * .62);
+        }
         body *= uTint * mix(vec3(1.), uSky * 1.25, .22);   // the water takes on the sky's mood (warm at sunset, blue at night)
         // light through the crests when looking toward the sun
         vec3 sunFlat = normalize(vec3(uSunDir.x, 0.001, uSunDir.z));
@@ -607,14 +613,14 @@ export function createWorld(canvas, game) {
   // ---------------------------------------------------------------- scenery outside the farm grid (instanced, deterministic)
   // map anchors (tools/make_island.py writes the waterfall + wreck spots into heights.json)
   const META = heights.meta || {};
-  const SHACK = [60, 36], WRECK = META.wreck || [24, 136];
+  const SHACK = [60, 36], WRECK = META.wreck || [30, 124];
   const FALLS = { pool: META.pool || [25, -46], dir: META.fallDir || [0.7, -0.72], lip: META.lip || [10, 24] };
   const R = mulberry(20251125);
   const keepClear = (x, z) =>
     (Math.abs(x) < 43 && z > -3 && z < 84) ||                          // the farm grid (z 0..80) and its beach row
     (Math.abs(x - PIER.x) < 6 && z > PIER.z - 20 && z < PIER.z + 14) || Math.hypot(x - SHACK[0], z - SHACK[1]) < 8 ||
     Math.hypot(x - FALLS.pool[0], z - FALLS.pool[1]) < 11 ||
-    Math.hypot(x - WRECK[0], z - WRECK[1]) < 10 || pathAt(x, z) > 0.02;
+    Math.hypot(x - WRECK[0], z - WRECK[1]) < 12 || pathAt(x, z) > 0.02;
   const slopeAt = (x, z) => Math.abs(heightAt(x + 1, z) - heightAt(x - 1, z)) + Math.abs(heightAt(x, z + 1) - heightAt(x, z - 1));
   const groups = {};
   const place = (name, x, z, s, foliage = true, yaw = R() * Math.PI * 2, tilt = 0) => {
@@ -629,8 +635,8 @@ export function createWorld(canvas, game) {
     const sl = slopeAt(px, pz);
     if (sl > 1.4) { if (r1 < 0.03) place(['rock_m', 'rock_l', 'rock_s'][(r2 * 3) | 0], px, pz, 0.8 + R() * 1.2, false); continue; }
     if (h > 16) {           // the mountain's grassy ledges: palms and jungle trees, as in the reference art
-      if (sl < 0.7 && r1 < 0.09) place(r2 < 0.5 ? ['palm_a', 'palm_b'][(R() * 2) | 0] : 'jungle_a', px, pz, 0.8 + R() * 0.4);
-      else if (sl < 0.7 && r1 < 0.16) place(r2 < 0.5 ? 'bush_a' : 'fern', px, pz, 0.8 + R() * 0.6);
+      if (sl < 0.7 && r1 < 0.15) place(r2 < 0.5 ? ['palm_a', 'palm_b'][(R() * 2) | 0] : 'jungle_a', px, pz, 0.9 + R() * 0.6);
+      else if (sl < 0.8 && r1 < 0.3) place(r2 < 0.5 ? 'bush_a' : 'fern', px, pz, 0.9 + R() * 0.7);
       else if (r1 < 0.19) place('rock_m', px, pz, 0.7 + R() * 0.9, false);
       continue;
     }
@@ -643,7 +649,7 @@ export function createWorld(canvas, game) {
       else if (r1 < 0.05) place('bush_a', px, pz, 0.7 + R() * 0.5);
       else if (r1 < 0.06) place('palm_a', px, pz, 0.9 + R() * 0.3);
     } else {                // inland jungle
-      if (r1 < 0.07) place(r2 < 0.55 ? 'jungle_a' : 'jungle_b', px, pz, 0.85 + R() * 0.6);
+      if (r1 < 0.03) place(r2 < 0.55 ? 'jungle_a' : 'jungle_b', px, pz, 0.85 + R() * 0.6);
       else if (r1 < 0.12) place('fern', px, pz, 0.8 + R() * 0.8);
       else if (r1 < 0.15) place('bush_a', px, pz, 0.8 + R() * 0.6);
       else if (r1 < 0.17) place(['palm_a', 'palm_b'][(r2 * 2) | 0], px, pz, 0.9 + R() * 0.4);
@@ -661,6 +667,22 @@ export function createWorld(canvas, game) {
     }
   }
   for (const [x, z, s] of [[-124, 40, 4.2], [-119, 45, 3.0], [-128, 34, 2.6], [-121, 36, 2.2], [-116, 41, 1.6]]) place('rock_l', x, z, s, false, x + z);
+  // clumps of big round-crowned trees with palms over flowering bushes: round the meadow, behind the beach,
+  // at the mountain's foot and on its ledges (the cluster centres; the bushes themselves are built below)
+  const bloomSpots = [];
+  for (let k = 0, n = 0; k < 20000 && n < 150; k++) {
+    const cx = (R() - 0.5) * 380, cz = (R() - 0.5) * 380, h = heightAt(cx, cz);
+    if (h < 0.95 || keepClear(cx, cz) || slopeAt(cx, cz) > 0.8) continue;
+    const nf = nearFarm(cx, cz), edgeOfMeadow = nf > 4 && nf < 34, beachBack = h < 2.4, ledge = h > 14;
+    if (!(edgeOfMeadow || beachBack || ledge) || R() < 0.25) continue;
+    n++;
+    if (R() < 0.75) place('jungle_a', cx + (R() - 0.5) * 3, cz + (R() - 0.5) * 3, 1.5 + R() * 0.8);
+    if (R() < 0.5) place(['palm_a', 'palm_b', 'palm_c'][(R() * 3) | 0], cx + (R() - 0.5) * 6, cz + (R() - 0.5) * 6, 1 + R() * 0.35);
+    for (let m = 3 + ((R() * 5) | 0); m--;) {
+      const x = cx + (R() - 0.5) * 8, z = cz + (R() - 0.5) * 8;
+      if (heightAt(x, z) > 0.9 && !keepClear(x, z)) bloomSpots.push([x, z, 0.7 + R() * 0.7]);
+    }
+  }
   for (let k = 0; k < 14000; k++) {          // grass tufts + flowers on grassy ground
     const px = (R() - 0.5) * 300, pz = (R() - 0.5) * 300;
     const h = heightAt(px, pz);
@@ -679,6 +701,32 @@ export function createWorld(canvas, game) {
       inst.setAt(k, m4, tint.setRGB(v, v * (0.97 + ((k * 31) % 10) / 160), v));
     });
     scene.add(inst);
+  }
+
+  // flowering bushes (hibiscus, bougainvillea): a low-poly green mound speckled with bright blossoms
+  {
+    const BR = mulberry(9090), leafG = [], bloomG = [];
+    for (let k = 0; k < 4; k++) {
+      const a = k / 4 * Math.PI * 2 + 0.4, r = k ? 0.45 : 0, s = k ? 0.55 : 0.75;
+      leafG.push(new THREE.IcosahedronGeometry(s, 0).translate(Math.cos(a) * r, s * 0.8 + (k ? 0 : 0.25), Math.sin(a) * r));
+    }
+    for (let k = 0; k < 16; k++) {   // blossoms sit on the mound's upper surface
+      const a = BR() * Math.PI * 2, e = 0.2 + BR() * 1.1, r = 0.95;
+      bloomG.push(new THREE.IcosahedronGeometry(0.13 + BR() * 0.06, 0).translate(Math.cos(a) * Math.cos(e) * r, 0.6 + Math.sin(e) * r * 0.85, Math.sin(a) * Math.cos(e) * r));
+    }
+    const leaf = mergeGeometries(leafG), bloom = mergeGeometries(bloomG);
+    const leafM = new THREE.MeshStandardMaterial({ roughness: 0.85, flatShading: true });
+    const bloomM = new THREE.MeshStandardMaterial({ roughness: 0.6, emissive: new THREE.Color('#2a1020'), flatShading: true });
+    const L = new THREE.InstancedMesh(leaf, leafM, bloomSpots.length), B = new THREE.InstancedMesh(bloom, bloomM, bloomSpots.length);
+    const cols = ['#ff4f8b', '#ff7ab8', '#c45cf2', '#ffd23f', '#ffffff', '#ff8a3d', '#ff3d5e', '#9d7bff'], cc = new THREE.Color();
+    const m4 = new THREE.Matrix4(), q4 = new THREE.Quaternion(), e4 = new THREE.Euler(), v4 = new THREE.Vector3(), s4 = new THREE.Vector3();
+    bloomSpots.forEach(([x, z, s], k) => {
+      m4.compose(v4.set(x, heightAt(x, z) - 0.1, z), q4.setFromEuler(e4.set(0, BR() * 6.28, 0)), s4.set(s, s * (0.8 + BR() * 0.3), s));
+      L.setMatrixAt(k, m4); B.setMatrixAt(k, m4);
+      L.setColorAt(k, cc.setHSL(0.27 + BR() * 0.06, 0.62, 0.3 + BR() * 0.08));
+      B.setColorAt(k, cc.set(cols[(BR() * cols.length) | 0]));
+    });
+    for (const im of [L, B]) { im.castShadow = true; im.receiveShadow = true; scene.add(im); }
   }
 
   // ---------------------------------------------------------------- tropical extras: coral heads in the shallows,
@@ -773,7 +821,7 @@ export function createWorld(canvas, game) {
   };
   const lampSpots = [];
   put('trader_pier', PIER.x, PIER.z, Math.PI / 2, -0.05);   // runs along z: land end north, boat berth at the south end
-  put('beach_shack', SHACK[0], SHACK[1], Math.PI * 0.5);
+  put('beach_shack', SHACK[0], SHACK[1], Math.PI * 0.5, null, 1.6);   // the shop hut, a landmark from across the meadow
   world.wreck = put('shipwreck', WRECK[0], WRECK[1], 0.4, -0.35);
   // after the ending the repaired ship rides at anchor where the wreck was
   const fixedShip = new THREE.Group();
@@ -1232,7 +1280,7 @@ export function createWorld(canvas, game) {
     tint.x *= 1 + wx.heat * 0.08; tint.z *= 1 - wx.heat * 0.12;
     tint.y *= 1 + wx.acid * 0.06; tint.z *= 1 - wx.acid * 0.15;
     gradeU.uNight.value = 1 - dayF;
-    gradeU.uSat.value = lerp(1.24, 0.78, wx.dark) * lerp(0.68, 1, dayF) * (game.settings?.sat ?? 1);   // vivid by day; settings slider scales it
+    gradeU.uSat.value = lerp(1.4, 0.78, wx.dark) * lerp(0.68, 1, dayF) * (game.settings?.sat ?? 1);   // vivid by day; settings slider scales it
     uniforms.uParallax.value = game.settings?.parallax ?? 1;   // night drains colour, like our eyes do
     gradeU.uVig.value = 0.3 + (1 - dayF) * 0.14 + wx.dark * 0.15 + world.cine.letterbox * 0.1;
     bloom.strength = lerp(0.55, 0.32, dayF);   // lights glow more in the dark
