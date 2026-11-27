@@ -9,9 +9,10 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutlinePass } from 'three/addons/postprocessing/OutlinePass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
-import { Pass } from 'three/addons/postprocessing/Pass.js';
+import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
+import { Reflector } from 'three/addons/objects/Reflector.js';
 import { mergeVertices, mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { makeMesh, makeInstanced, lib, mats, uniforms, heights, groundTex, TILE_GLSL } from './assets.js';
+import { makeMesh, makeInstanced, lib, mats, uniforms, heights, groundTex, TILE_GLSL, withDetail, MAT, matTex, MAT_FUNCS, matUniforms } from './assets.js';
 import { heightAt, pathAt } from './terrain.js';
 import { createWildlife } from './wildlife.js';
 import { DAY_LEN, TIDE_HIGH, PIER, GRID, TILE, ORIGIN, ORIGIN_Z } from './data.js';
@@ -180,11 +181,13 @@ export function createWorld(canvas, game) {
   soilTex.needsUpdate = true;
   const soilU = { uSoil: { value: soilTex }, uSoilInfo: { value: new THREE.Vector3(ORIGIN, ORIGIN_Z, GRID * TILE) } };
   world.setSoil = (k, on) => { const v = on ? 255 : 0; if (soilData[k] !== v) { soilData[k] = v; soilTex.needsUpdate = true; } };
-  function groundMat(detail) {
-    const mat = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0 });   // lit physically so the texture normals and wet sheen read
-    if (detail) mat.defines = { GROUND_DETAIL: '' };
+  const MTN = new THREE.Vector3(...(heights.meta?.summit || [0, 0]), lib.mountain ? heights.meta?.mountainR || 0 : 0);   // the mountain asset's footprint
+  function groundMat(detail, mountain = false) {
+    const mat = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, vertexColors: mountain });   // lit physically so the texture normals and wet sheen read
+    mat.defines = { ...(detail ? { GROUND_DETAIL: '' } : {}), ...(mountain ? { MOUNTAIN: '' } : {}) };
+    mat.customProgramCacheKey = () => 'ground' + (detail ? '-d' : '') + (mountain ? '-m' : '');
     mat.onBeforeCompile = sh => {
-      Object.assign(sh.uniforms, patchU, { uParallax: uniforms.uParallax, uH: { value: htex }, uCTime: uniforms.uTime, uWaterL: waterLU, uCaust: caustU, uWet: wetU, ...soilU },
+      Object.assign(sh.uniforms, matUniforms(), { uMtn: { value: MTN } }, patchU, { uParallax: uniforms.uParallax, uH: { value: htex }, uCTime: uniforms.uTime, uWaterL: waterLU, uCaust: caustU, uWet: wetU, ...soilU },
         Object.fromEntries(Object.entries(groundTex).map(([k, t]) => ['t' + k, { value: t }])));
       sh.uniforms.uHInfo = { value: new THREE.Vector3(heights.off, heights.step, heights.n) };
       sh.vertexShader = sh.vertexShader
@@ -231,12 +234,17 @@ export function createWorld(canvas, game) {
         .replace('#include <common>', `#include <common>
           varying vec3 vGW; varying vec3 vGN; varying float vBaseH; varying float vPath;
           uniform vec2 uPatchC; uniform float uPatchR; uniform float uCTime, uWaterL, uCaust, uWet;
-          uniform sampler2D tgrassA, tgrassD, tgrassH, tsoilA, tsoilD, tsoilH, tsandA, tsandD, tsandH;
+          uniform sampler2D tgrassA, tgrassD, tgrassH, tsoilA, tsoilD, tsoilH, tsandA, tsandD, tsandH; uniform vec3 uMtn;
           ${NOISE}
-          ${TILE_GLSL}`)
+          ${TILE_GLSL}
+          ${MAT_FUNCS}
+          vec3 gCliffN = vec3(0.);`)
         .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
-          #ifndef GROUND_DETAIL
+          #if !defined(GROUND_DETAIL) && !defined(MOUNTAIN)
             if (max(abs(vGW.x - uPatchC.x), abs(vGW.z - uPatchC.y)) < uPatchR - .3) discard;   // the detail mesh is drawn here
+          #endif
+          #ifndef MOUNTAIN
+            if (uMtn.z > 0. && length(vGW.xz - uMtn.xy) < uMtn.z) discard;   // the mountain asset is drawn here
           #endif`)
         .replace('#include <color_fragment>', `#include <color_fragment>
         float gBump = 0., gRough = 1., gWetF = 0.; vec2 gTexN = vec2(0.);
@@ -304,7 +312,19 @@ export function createWorld(canvas, game) {
           c = mix(seabed, c, smoothstep(.05, .3, h));
           float low = 1. - smoothstep(6., 24., h + (big - .5) * 10.);      // grass holds on steeper ground in the foothills
           float rockAmt = max(smoothstep(.42 + low * .4, .6 + low * .45, slope + (mid - .5) * .2), smoothstep(22., 30., h + mid * 6.) * smoothstep(.38, .62, slope));   // the mountain's ledges and gentler flanks stay green
+          #ifdef MOUNTAIN
+            rockAmt = max(rockAmt, smoothstep(.3, .48, slope + (mid - .5) * .12) * smoothstep(1.5, 3., h));   // grass only holds on the ledges (it smears down a steep face)
+          #endif
+          {   // cliff rock: the baked cliff texture along the world axes, with parallax (strata, joints, ledges, moss)
+            float cd0 = length(cameraPosition - vGW); vec3 cTilt; float cRough;
+            vec4 cd = rockAmt > .02 ? triDetail(vGW, normalize(vGN), cameraPosition - vGW, cd0 * .3, 9, 1., cTilt, cRough) : vec4(1.);
+            rock *= cd.rgb * cd.a * vec3(1.05, 1.02, .98);
+            gCliffN = rockAmt > .02 ? cTilt * rockAmt * 1.5 : vec3(0.);
+          }
           c = mix(c, rock, rockAmt);
+          #ifdef MOUNTAIN
+            c *= mix(.42, 1.05, vColor.r);   // ambient occlusion baked in Blender: crevices, overhangs, the foot of each cliff
+          #endif
           // the mountain trail: packed earth with worn edges and pebbles
           float trail = smoothstep(.15, .65, vPath + (gn(q * 1.9) - .5) * .35);
           vec3 dirt = mix(vec3(.52, .4, .28), vec3(.66, .54, .38), mid) * (.88 + fine * .16);
@@ -343,7 +363,7 @@ export function createWorld(canvas, game) {
         .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
         {   // baked texture normal: tilt the ground normal (world space) by the texture's x/z slope
           vec2 tn = gTexN * 1.15;
-          vec3 wn = normalize(vGN * sqrt(max(1. - dot(tn, tn), .05)) + vec3(tn.x, 0., tn.y));
+          vec3 wn = normalize(vGN * sqrt(max(1. - dot(tn, tn), .05)) + vec3(tn.x, 0., tn.y) + gCliffN);
           normal = normalize((viewMatrix * vec4(wn, 0.)).xyz);
         }
         {   // bump from gBump using screen-space derivatives (no textures)
@@ -375,6 +395,11 @@ export function createWorld(canvas, game) {
   island.receiveShadow = true; island.castShadow = true;
   island.name = 'island';
   world.groundGroup.add(island);
+  if (lib.mountain) {   // the mountain: its own sculpted asset (tools/make_mountain.py), same ground shading
+    const mtn = new THREE.Mesh(lib.mountain.geo, groundMat(false, true));
+    mtn.receiveShadow = mtn.castShadow = true; mtn.name = 'mountain';
+    world.groundGroup.add(mtn);
+  }
   const detail = new THREE.Mesh(new THREE.PlaneGeometry(PATCH, PATCH, PATCH_SEG, PATCH_SEG).rotateX(-Math.PI / 2), groundMat(true));
   detail.receiveShadow = true; detail.castShadow = false; detail.frustumCulled = false; detail.name = 'ground-detail';
   scene.add(detail);
@@ -398,29 +423,57 @@ export function createWorld(canvas, game) {
     uLight: { value: 1 }, uFogColor: { value: C('#bfe4f0') }, uFogNear: { value: 70 }, uFogFar: { value: 420 },
     uRough: { value: 0 }, uTint: { value: C('#ffffff') },
   };
-  const WSEG = 5;   // the mesh follows the camera in 5 m steps (dense near you, no swimming)
-  const water = new THREE.Mesh(new THREE.PlaneGeometry(1600, 1600, 320, 320).rotateX(-Math.PI / 2), new THREE.ShaderMaterial({
+  // ocean swell: Gerstner waves (crests sharpen and lean together, troughs flatten, the surface rolls), five wave
+  // trains from 42 m down to 6 m, damped in the shallows, the short ones faded out with distance so the coarser
+  // far mesh doesn't shimmer. Same sums in the vertex shader, the fragment normal and world.waveAt.
+  const WAVES = [[0.92, 0.39, 60, 0.55, 0.35], [0.6, 0.8, 37, 0.42, 0.5], [-0.3, 0.95, 22, 0.26, 0.6], [0.98, -0.2, 13, 0.13, 0.65], [0.45, 0.89, 8, 0.07, 0.6], [-0.7, 0.7, 5, 0.035, 0.5]];
+  const GERSTNER = /* glsl */`
+    const int NW = ${WAVES.length};
+    const vec4 WD[NW] = vec4[NW](${WAVES.map(([x, z, L]) => { const k = Math.PI * 2 / L, l = Math.hypot(x, z); return `vec4(${(x / l).toFixed(4)}, ${(z / l).toFixed(4)}, ${k.toFixed(5)}, ${Math.sqrt(9.81 * k).toFixed(5)})`; }).join(', ')});
+    const vec3 WA[NW] = vec3[NW](${WAVES.map(([, , L, A, Q]) => `vec3(${A}, ${Q}, ${L.toFixed(1)})`).join(', ')});
+    // p: rest position (xz), amp: depth + storm factor, dist: to the camera. disp: offset, nrm: unit normal, crest: -1..1
+    void gerstner(vec2 p, float t, float amp, float dist, out vec3 disp, out vec3 nrm, out float crest){
+      disp = vec3(0.); vec3 n = vec3(0., 1., 0.); crest = 0.; float tot = 0.;
+      for (int i = 0; i < NW; i++) {
+        float A = WA[i].x * amp * (1. - smoothstep(WA[i].z * 3., WA[i].z * 9., dist)), Q = WA[i].y;
+        float th = WD[i].z * dot(WD[i].xy, p) - WD[i].w * t, s = sin(th), c = cos(th);
+        disp += vec3(WD[i].x * Q * A * c, A * s, WD[i].y * Q * A * c);
+        n -= vec3(WD[i].x * WD[i].z * A * c, Q * WD[i].z * A * s, WD[i].y * WD[i].z * A * c);
+        crest += s * A; tot += A;
+      }
+      nrm = normalize(n); crest /= max(tot, 1e-4);
+    }`;
+  // the water mesh: a grid packed tight round the camera (20 cm apart under your feet, ~30 m at the horizon)
+  const wGeo = new THREE.PlaneGeometry(2, 2, 300, 300).rotateX(-Math.PI / 2);
+  { const p = wGeo.attributes.position; for (let i = 0; i < p.count; i++) { const f = v => Math.sign(v) * 1800 * Math.abs(v) ** 2.4; p.setXYZ(i, f(p.getX(i)), 0, f(p.getZ(i))); } }
+  const WSEG = 2;   // the mesh follows the camera in 2 m steps
+  waterU.tRefl = { value: null }; waterU.uReflMat = { value: new THREE.Matrix4() }; waterU.uReflOn = { value: 0 };
+  const water = new THREE.Mesh(wGeo, new THREE.ShaderMaterial({
     uniforms: waterU, transparent: true,
     vertexShader: /* glsl */`
-      uniform float uTime, uLevel, uOff, uSpan, uRough; uniform sampler2D uH;
-      varying vec3 vW; varying float vCrest;
+      uniform float uTime, uLevel, uOff, uSpan, uRough; uniform sampler2D uH; uniform mat4 uReflMat;
+      varying vec3 vW; varying float vCrest; varying vec3 vWN; varying vec4 vRefl;
+      ${GERSTNER}
       float ground(vec2 p){ vec2 uv = (p - uOff) / uSpan; if (any(lessThan(uv, vec2(0.))) || any(greaterThan(uv, vec2(1.)))) return -15.; return texture2D(uH, uv).r; }
       void main(){
         vec3 p = (modelMatrix * vec4(position, 1.)).xyz;
         float depth = uLevel - ground(p.xz);
-        float amp = clamp(depth / 4., 0.08, 1.) * (0.18 + uRough * 0.35);
-        float w = sin(dot(p.xz, vec2(0.11, 0.05)) + uTime * 0.9) + 0.6 * sin(dot(p.xz, vec2(-0.07, 0.13)) + uTime * 1.3) + 0.3 * sin(dot(p.xz, vec2(0.21, -0.17)) + uTime * 2.1);
+        float amp = clamp(depth / 5., 0.16, 1.) * (1. + uRough * 1.6);   // the lagoon still ripples and heaves a little
+        vec3 disp, nrm; float crest;
+        gerstner(p.xz, uTime, amp, distance(p.xz, cameraPosition.xz), disp, nrm, crest);
         // surf: wave rows rolling in toward the beach, rising as the water shallows
         float sph = depth * 1.5 - uTime * 1.15 + sin(p.x * .05 + p.z * .03) * 2.;
         float surf = pow(max(sin(sph), 0.), 3.) * smoothstep(3.8, 1.4, depth) * smoothstep(.15, .7, depth) * (.16 + uRough * .2);
-        p.y = uLevel + w * amp + surf;
-        vW = p; vCrest = w / 1.9 * clamp(depth / 2., 0., 1.) + surf * 4.;
+        float sh = smoothstep(0., .6, depth);
+        p.xz += disp.xz * sh; p.y = uLevel + disp.y * sh + surf;
+        vW = p; vWN = normalize(mix(vec3(0., 1., 0.), nrm, sh)); vCrest = crest * clamp(depth / 2., 0., 1.) + surf * 4.;
+        vRefl = uReflMat * vec4(p, 1.);
         gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.);
       }`,
     fragmentShader: /* glsl */`
       uniform float uTime, uLight, uFogNear, uFogFar, uRough, uLevel, uOff, uSpan;
-      uniform vec3 uSunDir, uSunCol, uSky, uZenith, uFogColor, uTint; uniform sampler2D uH;
-      varying vec3 vW; varying float vCrest;
+      uniform vec3 uSunDir, uSunCol, uSky, uZenith, uFogColor, uTint; uniform sampler2D uH, tRefl; uniform float uReflOn;
+      varying vec3 vW; varying float vCrest; varying vec3 vWN; varying vec4 vRefl;
       float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
       float vn(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f * f * f * (f * (f * 6. - 15.) + 10.);   // quintic: no creases
         return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y); }
@@ -466,11 +519,8 @@ export function createWorld(canvas, game) {
         float inRiver = (1. - smoothstep(3.5, 7., abs(q.x - rx))) * step(-56., q.y) * (1. - smoothstep(76., 88., q.y));
         vec2 flow = normalize(vec2(along, 1.)) * inRiver * 1.4;
         // swell slope (analytic, matches the vertex waves) + ripples
-        float amp = clamp(d / 4., 0.08, 1.) * (0.18 + uRough * 0.35);
-        float a1 = dot(q, vec2(0.11, 0.05)) + t * 0.9, a2 = dot(q, vec2(-0.07, 0.13)) + t * 1.3, a3 = dot(q, vec2(0.21, -0.17)) + t * 2.1;
-        vec2 sw = (cos(a1) * vec2(0.11, 0.05) + 0.6 * cos(a2) * vec2(-0.07, 0.13) + 0.3 * cos(a3) * vec2(0.21, -0.17)) * amp;
-        vec2 rp = ripN(q, flow, t, detail) * mix(.2, .07, smoothstep(10., 260., dist)) * (1. + uRough * 1.8 + inRiver * .4);
-        vec3 N = normalize(vec3(-(sw.x + rp.x), 1., -(sw.y + rp.y)));
+        vec2 rp = ripN(q, flow, t * 1.7, detail) * mix(.3, .11, smoothstep(10., 260., dist)) * (1. + uRough * 1.8 + inRiver * .4);
+        vec3 N = normalize(normalize(vWN) + vec3(-rp.x, 0., -rp.y));   // the swell's own slope (Gerstner) + ripples
         float NdV = max(dot(N, V), 0.);
         // body colour, like a tropical lagoon: glassy aqua at the beach, bright turquoise over the sandy shelf,
         // then a fairly quick drop to deep navy past the reef
@@ -482,6 +532,9 @@ export function createWorld(canvas, game) {
           float reefP = smoothstep(.56, .72, vn(q * .045 + 3.) * .65 + vn(q * .14 + 9.) * .35) * smoothstep(.8, 1.7, d) * (1. - smoothstep(3.6, 6., d));
           body = mix(body, vec3(.0, .28, .42), reefP * .62);
         }
+        // crests catch more light and look paler and greener, troughs sink darker and bluer: the swell reads as shape, not a flat sheet
+        float cw = clamp(vCrest * .5 + .5, 0., 1.) * smoothstep(.4, 2.5, d);
+        body *= mix(vec3(.78, .84, .92), vec3(1.1, 1.14, 1.08), mix(.5, cw, smoothstep(.4, 2.5, d)));
         body *= uTint * mix(vec3(1.), uSky * 1.25, .22);   // the water takes on the sky's mood (warm at sunset, blue at night)
         // light through the crests when looking toward the sun
         vec3 sunFlat = normalize(vec3(uSunDir.x, 0.001, uSunDir.z));
@@ -495,8 +548,16 @@ export function createWorld(canvas, game) {
           float cl = vn(cuv) * .55 + vn(cuv * 2.1 + 3.) * .3 + vn(cuv * 4.3 + 7.) * .15;
           sky = mix(sky, mix(uSky, vec3(1.), .7) * max(uLight, .2), smoothstep(.55, .78, cl) * .75 * smoothstep(.0, .15, Rv.y));
         }
+        if (uReflOn > 0.) {   // the island, boats and clouds mirrored in the water, broken up by the waves
+          vec4 rc = vRefl; rc.xy += N.xz * vec2(1.2, 1.2) * rc.w * .06;
+          vec3 mir = rc.w > .05 ? textureProj(tRefl, rc).rgb : sky;
+          if (any(isnan(mir)) || any(isinf(mir))) mir = sky;   // never let a bad texel reach the bloom
+          sky = mix(sky, min(mir, vec3(6.)), uReflOn * smoothstep(.0, .05, Rv.y + .05));
+        }
         float F = .02 + .98 * pow(1. - NdV, 5.);
-        col = mix(col, sky, clamp(F * .5, 0., 1.));   // reflection holds back: the water keeps its colour
+        col = mix(col, sky, clamp(F * .55, 0., 1.));   // reflection holds back: the water keeps its colour
+        // whitecaps: the sharpest crests of the open swell break into foam, more in a blow
+        float wcap = smoothstep(.75, .98, vCrest) * smoothstep(3., 8., d) * (.06 + uRough * .9) * smoothstep(.5, .85, vn(q * .12 + t * .04) * .6 + vn(q * .9 + t * .3) * .4) * (1. - smoothstep(40., 160., dist));
         // the sun (or moon): tight hot spot, soft glare, and glints on the ripples
         vec3 Hh = normalize(uSunDir + V);
         float ndh = max(dot(N, Hh), 0.);
@@ -506,7 +567,7 @@ export function createWorld(canvas, game) {
         float lap = sin(d * 11. - t * 1.6 + vn(q * .5) * 6.) * .5 + .5;
         float edge = smoothstep(.45, 0., d);
         float foam = edge * smoothstep(.55, .92, lap) * (.6 + .4 * vn(q * 2.5 + t * .2)) + smoothstep(.16, .02, d) * (.55 + .45 * vn(q * 4. - t * .3));
-        foam += uRough * smoothstep(.72, .95, vn(q * .7 + vec2(t * .4, t * .25))) * .7 * (1. - edge);   // whitecaps in storms
+        foam += uRough * smoothstep(.72, .95, vn(q * .7 + vec2(t * .4, t * .25))) * .7 * (1. - edge) + wcap * (1. - edge);   // whitecaps
         {   // surf: each wave row breaks into a foam line as it reaches the shallows, then washes out as streaks
           float sph = d * 1.5 - t * 1.15 + sin(q.x * .05 + q.y * .03) * 2.;
           float crest = pow(max(sin(sph), 0.), 10.), wake = pow(max(sin(sph + .9), 0.), 3.);
@@ -710,30 +771,32 @@ export function createWorld(canvas, game) {
       const a = k / 4 * Math.PI * 2 + 0.4, r = k ? 0.45 : 0, s = k ? 0.55 : 0.75;
       leafG.push(new THREE.IcosahedronGeometry(s, 0).translate(Math.cos(a) * r, s * 0.8 + (k ? 0 : 0.25), Math.sin(a) * r));
     }
-    for (let k = 0; k < 16; k++) {   // blossoms sit on the mound's upper surface
-      const a = BR() * Math.PI * 2, e = 0.2 + BR() * 1.1, r = 0.95;
-      bloomG.push(new THREE.IcosahedronGeometry(0.13 + BR() * 0.06, 0).translate(Math.cos(a) * Math.cos(e) * r, 0.6 + Math.sin(e) * r * 0.85, Math.sin(a) * Math.cos(e) * r));
+    for (let k = 0; k < 46; k++) {   // blossoms dotted over the crown: five-petal flowers, small, many
+      const a = BR() * Math.PI * 2, e = 0.45 + BR() * 1.0, r = 0.82 + BR() * 0.12;
+      const fl = new THREE.CircleGeometry(0.045 + BR() * 0.025, 5).rotateX(-Math.PI / 2 + (BR() - 0.5) * 1.2).rotateY(BR() * 6.28);
+      bloomG.push(fl.translate(Math.cos(a) * Math.cos(e) * r * 1.05, 0.62 + Math.sin(e) * r * 0.8, Math.sin(a) * Math.cos(e) * r * 1.05));
     }
     const leaf = mergeGeometries(leafG), bloom = mergeGeometries(bloomG);
-    const leafM = new THREE.MeshStandardMaterial({ roughness: 0.85, flatShading: true });
-    const bloomM = new THREE.MeshStandardMaterial({ roughness: 0.6, emissive: new THREE.Color('#2a1020'), flatShading: true });
-    const L = new THREE.InstancedMesh(leaf, leafM, bloomSpots.length), B = new THREE.InstancedMesh(bloom, bloomM, bloomSpots.length);
+    const leafM = withDetail(new THREE.MeshStandardMaterial({ roughness: 0.85, flatShading: true }), MAT.leaf, 'bush');
+    const bloomM = withDetail(new THREE.MeshStandardMaterial({ roughness: 0.6, emissive: new THREE.Color('#2a1020'), side: THREE.DoubleSide }), MAT.organic, 'bloom');
+    const L = makeInstanced('bush_a', bloomSpots.length, { foliage: true }), B = new THREE.InstancedMesh(bloom, bloomM, bloomSpots.length);   // leafy bush (leaf cards) under the blossoms
     const cols = ['#ff4f8b', '#ff7ab8', '#c45cf2', '#ffd23f', '#ffffff', '#ff8a3d', '#ff3d5e', '#9d7bff'], cc = new THREE.Color();
     const m4 = new THREE.Matrix4(), q4 = new THREE.Quaternion(), e4 = new THREE.Euler(), v4 = new THREE.Vector3(), s4 = new THREE.Vector3();
     bloomSpots.forEach(([x, z, s], k) => {
       m4.compose(v4.set(x, heightAt(x, z) - 0.1, z), q4.setFromEuler(e4.set(0, BR() * 6.28, 0)), s4.set(s, s * (0.8 + BR() * 0.3), s));
-      L.setMatrixAt(k, m4); B.setMatrixAt(k, m4);
-      L.setColorAt(k, cc.setHSL(0.27 + BR() * 0.06, 0.62, 0.3 + BR() * 0.08));
+      B.setMatrixAt(k, m4);
+      const lm = m4.clone().scale(s4.set(1.35, 1.35, 1.35));
+      L.setAt(k, lm, cc.setHSL(0.27 + BR() * 0.06, 0.25, 0.82 + BR() * 0.12));
       B.setColorAt(k, cc.set(cols[(BR() * cols.length) | 0]));
     });
-    for (const im of [L, B]) { im.castShadow = true; im.receiveShadow = true; scene.add(im); }
+    B.castShadow = B.receiveShadow = true; scene.add(B, L);
   }
 
   // ---------------------------------------------------------------- tropical extras: coral heads in the shallows,
   // schools of reef fish, starfish and shells on the sand. Built here from simple shapes, coloured per instance.
   const tropic = (() => {
     const TR = mulberry(4242), pick = a => a[(TR() * a.length) | 0];
-    const lit = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0 });
+    const lit = withDetail(new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0 }), MAT.organic, 'reef');
     const spots = (n, lo, hi, test = () => true) => {   // n random spots with ground height in [lo, hi]
       const out = [];
       for (let k = 0; k < n * 60 && out.length < n; k++) {
@@ -929,6 +992,25 @@ export function createWorld(canvas, game) {
     boat.rotation.set(Math.sin(tt * 0.9) * 0.04, lerp(boat.rotation.y, yaw, 0.05), Math.sin(tt * 1.2) * 0.05);
   }
 
+  // distant islands on the horizon: hazy blue silhouettes so the sea doesn't just run out into nothing
+  {
+    const DR = mulberry(31337), mat = new THREE.MeshStandardMaterial({ color: '#56704e', roughness: 0.95, flatShading: true });
+    for (const [ang, r, w, hgt] of [[0.5, 1150, 150, 70], [1.35, 1300, 220, 95], [2.6, 1050, 120, 45], [3.5, 1250, 260, 110], [4.4, 980, 90, 38], [5.5, 1200, 180, 60]]) {
+      const g = new THREE.IcosahedronGeometry(1, 4), p = g.attributes.position;
+      const ph = DR() * 10;
+      for (let i = 0; i < p.count; i++) {
+        const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+        const bump = 1 + 0.25 * Math.sin(x * 3 + ph) * Math.cos(z * 2.4 + ph) + 0.12 * Math.sin(x * 7 + z * 5);
+        p.setXYZ(i, x * w, Math.max(y, -0.3) * hgt * bump, z * w * (0.55 + DR() * 0.02));
+      }
+      g.computeVertexNormals();
+      const m = new THREE.Mesh(g, mat);
+      m.position.set(Math.cos(ang) * r, -6, Math.sin(ang) * r); m.rotation.y = DR() * 6.28;
+      m.castShadow = m.receiveShadow = false;
+      scene.add(m);
+    }
+  }
+
   // drifting clouds
   const clouds = [];
   const CR = mulberry(77);
@@ -985,7 +1067,79 @@ export function createWorld(canvas, game) {
   // ---------------------------------------------------------------- post-processing
   const size = new THREE.Vector2(innerWidth, innerHeight);
   const composer = new EffectComposer(renderer);
-  const renderPass = new RenderPass(scene, camera);
+  // the scene, then aerial perspective from its depth: height haze (thick low over the sea, thinning with
+  // altitude, glowing toward the sun) that swallows the far ocean and the distant islands, and a gentle depth of
+  // field that softens the far distance
+  const hazeU = {
+    tColor: { value: null }, tDepth: { value: null }, uProjInv: { value: new THREE.Matrix4() }, uViewInv: { value: new THREE.Matrix4() },
+    uCam: { value: new THREE.Vector3() }, uSunDir: { value: new THREE.Vector3(0, 1, 0) }, uHaze: { value: new THREE.Color() }, uSunCol: { value: new THREE.Color() },
+    uDens: { value: 0.0009 }, uFall: { value: 1 / 55 }, uDof: { value: 1 }, uDofNear: { value: 150 }, uDofFar: { value: 700 }, uTexel: { value: new THREE.Vector2() },
+  };
+  class ScenePass extends Pass {
+    constructor() {
+      super();
+      this.rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthTexture: new THREE.DepthTexture(1, 1) });
+      this.quad = new FullScreenQuad(new THREE.ShaderMaterial({
+        uniforms: hazeU, depthTest: false, depthWrite: false,
+        vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0., 1.); }',
+        fragmentShader: /* glsl */`
+          uniform sampler2D tColor, tDepth; uniform mat4 uProjInv, uViewInv; uniform vec3 uCam, uSunDir, uHaze, uSunCol;
+          uniform float uDens, uFall, uDof, uDofNear, uDofFar; uniform vec2 uTexel; varying vec2 vUv;
+          float distAt(vec2 uv, out vec3 rd){
+            float d = texture2D(tDepth, uv).x;
+            vec4 v = uProjInv * vec4(uv * 2. - 1., min(d, .999999) * 2. - 1., 1.); v /= v.w;
+            vec3 wp = (uViewInv * vec4(v.xyz, 1.)).xyz, ray = wp - uCam;
+            float dist = length(ray); rd = ray / dist;
+            return d >= .999999 ? 6000. : dist;   // the sky dome: looking through all of the air
+          }
+          void main(){
+            vec3 rd; float dist = distAt(vUv, rd);
+            vec3 col = texture2D(tColor, vUv).rgb;
+            float coc = uDof * smoothstep(uDofNear, uDofFar, dist) * 3.2;   // blur radius in pixels, far things only
+            if (coc > .3) {
+              vec3 acc = col; float wsum = 1.;
+              for (int i = 0; i < 12; i++) {
+                float a = float(i) * 2.39996, r = sqrt(float(i) + .5) / sqrt(12.) * coc;
+                vec2 uv = vUv + vec2(cos(a), sin(a)) * r * uTexel;
+                vec3 rd2; float d2 = distAt(uv, rd2);
+                float w = smoothstep(uDofNear * .8, uDofNear, d2);   // never pull sharp near things into the blur
+                acc += texture2D(tColor, uv).rgb * w; wsum += w;
+              }
+              col = acc / wsum;
+            }
+            float y0 = max(uCam.y, 0.), dy = rd.y * dist;
+            float e0 = exp(-y0 * uFall), e1 = exp(-max(y0 + dy, 0.) * uFall);
+            float od = uDens * dist * (abs(dy) > .05 ? (e0 - e1) / (dy * uFall) : e0);
+            float f = 1. - exp(-od);
+            vec3 hz = uHaze + uSunCol * pow(max(dot(rd, uSunDir), 0.), 6.) * .35;
+            col = mix(col, hz, f);
+            if (any(isnan(col)) || any(isinf(col))) col = hz;
+            gl_FragColor = vec4(min(col, vec3(64.)), 1.);
+          }`,
+      }));
+    }
+    setSize(w, h) { this.rt.setSize(w, h); hazeU.uTexel.value.set(1 / w, 1 / h); }
+    render(r, write) {
+      r.setRenderTarget(this.rt); r.clear(); r.render(scene, camera);
+      hazeU.tColor.value = this.rt.texture; hazeU.tDepth.value = this.rt.depthTexture;
+      hazeU.uProjInv.value.copy(camera.projectionMatrixInverse); hazeU.uViewInv.value.copy(camera.matrixWorld); hazeU.uCam.value.copy(camera.position);
+      r.setRenderTarget(this.renderToScreen ? null : write); this.quad.render(r);
+    }
+  }
+  const renderPass = new ScenePass();
+  // water reflections: the scene mirrored in the water plane at a third of the screen size (high quality only)
+  const reflector = new Reflector(new THREE.PlaneGeometry(1, 1), { textureWidth: 512, textureHeight: 512, clipBias: 0.02 });
+  reflector.rotation.x = -Math.PI / 2;
+  const _rm = new THREE.Matrix4();
+  function renderReflection() {
+    reflector.position.set(camera.position.x, waterU.uLevel.value, camera.position.z);
+    reflector.updateMatrixWorld();
+    water.visible = false;
+    reflector.onBeforeRender(renderer, scene, camera);
+    water.visible = true;
+    waterU.tRefl.value = reflector.getRenderTarget().texture;
+    waterU.uReflMat.value.multiplyMatrices(reflector.material.uniforms.textureMatrix.value, _rm.copy(reflector.matrixWorld).invert());
+  }
   // ambient occlusion: soft contact shadow where things meet the ground, in furrows, under leaves
   const ao = new GTAOPass(scene, camera, size.x, size.y);
   ao.updateGtaoMaterial({ radius: 0.7, distanceExponent: 1.4, thickness: 1.2, scale: 1.15, samples: 12 });
@@ -1070,16 +1224,32 @@ export function createWorld(canvas, game) {
   composer.addPass(grade);
   composer.addPass(output);
 
-  let quality = 'high';
+  let quality = 'high', reflOn = false, viewDist = 1;
   world.setQuality = q => {
     quality = q === 'low' ? 'low' : 'high';
     const hi = quality === 'high';
     renderer.setPixelRatio(hi ? Math.min(devicePixelRatio, 1.75) : 1);
-    godRays.enabled = hi; bloom.enabled = hi; ao.enabled = hi;
-    const ms = hi ? 4096 : 1024;
-    if (sun.shadow.mapSize.x !== ms) { sun.shadow.mapSize.set(ms, ms); sun.shadow.map?.dispose(); sun.shadow.map = null; }
-    renderer.shadowMap.type = hi ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+    godRays.enabled = hi; bloom.enabled = hi;
+    world.applyGraphics();
     world.resize();
+  };
+  // the graphics settings: view distance (draw distance, haze, shadow range, texture detail range), shadows
+  // high / low, ambient occlusion, depth of field, water reflections
+  world.applyGraphics = () => {
+    const st = game.settings || {}, hi = quality === 'high';
+    viewDist = Math.min(2, Math.max(0.5, +(st.viewDist ?? 1)));
+    camera.far = Math.max(700, 1600 * viewDist); camera.updateProjectionMatrix();
+    const shHigh = (st.shadows ?? (hi ? 'high' : 'low')) === 'high';
+    const ms = shHigh ? 4096 : 1536;
+    if (sun.shadow.mapSize.x !== ms) { sun.shadow.mapSize.set(ms, ms); sun.shadow.map?.dispose(); sun.shadow.map = null; }
+    renderer.shadowMap.type = shHigh ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+    const ext = 48 * Math.min(1.8, Math.max(0.6, viewDist)) * (shHigh ? 1 : 0.8);
+    sc.left = -ext; sc.right = ext; sc.top = ext; sc.bottom = -ext; sc.far = 260 + ext * 2; sc.updateProjectionMatrix();
+    ao.enabled = st.ao !== false && hi;
+    reflOn = st.reflections !== false && hi;
+    waterU.uReflOn.value = reflOn ? 0.85 : 0;
+    hazeU.uDof.value = st.dof === false ? 0 : 1;
+    uniforms.uDetailDist.value = 60 * viewDist;
   };
   world.renderSize = null;   // [w, h] to render at a fixed size (the trailer recorder), else the window
   world.resize = () => {
@@ -1089,16 +1259,19 @@ export function createWorld(canvas, game) {
     camera.updateProjectionMatrix(); vmCamera.updateProjectionMatrix();
     composer.setPixelRatio(renderer.getPixelRatio());
     composer.setSize(w, h);
+    reflector.getRenderTarget().setSize(Math.max(256, Math.round(w / 3)), Math.max(144, Math.round(h / 3)));
     gradeU.uRes.value.set(w * renderer.getPixelRatio(), h * renderer.getPixelRatio());
   };
   world.setOutline = objs => { outline.selectedObjects = objs || []; };
   let flashV = 0;
   world.flash = (s = 1) => { flashV = Math.max(flashV, s); };
-  // open-water wave height, matching the water vertex shader (deep water)
+  // the water's height at a point: the same Gerstner sum as the water shader (vertical part)
   world.waveAt = (x, z) => {
-    const t = performance.now() / 1000, amp = 0.18 + waterU.uRough.value * 0.35;
-    const w = Math.sin(x * 0.11 + z * 0.05 + t * 0.9) + 0.6 * Math.sin(-x * 0.07 + z * 0.13 + t * 1.3) + 0.3 * Math.sin(x * 0.21 - z * 0.17 + t * 2.1);
-    return waterU.uLevel.value + w * amp;
+    const t = uniforms.uTime.value, depth = waterU.uLevel.value - heightAt(x, z);
+    const amp = Math.min(1, Math.max(0.16, depth / 5)) * (1 + waterU.uRough.value * 1.6);
+    let y = 0;
+    for (const [dx, dz, L, A] of WAVES) { const l = Math.hypot(dx, dz), k = Math.PI * 2 / L; y += A * amp * Math.sin(k * (dx * x + dz * z) / l - Math.sqrt(9.81 * k) * t); }
+    return waterU.uLevel.value + y * Math.min(1, Math.max(0, depth / 0.6));
   };
 
   // ---------------------------------------------------------------- day / night
@@ -1173,8 +1346,14 @@ export function createWorld(canvas, game) {
     skyU.uSunDir.value.copy(world.sunDir); skyU.uSunCol.value.copy(sunCol);
     skyU.uDay.value = dayF; skyU.uCloudy.value = wx.dark;
     scene.fog.color.copy(hor).lerp(tmpB.set('#3f93ea'), 0.3 * dayF * (1 - wx.dark));   // distant sea stays blue, as in the art
-    scene.fog.near = lerp(190, 25, wx.dark) * lerp(0.7, 1, dayF);   // clear tropical air on fine days
-    scene.fog.far = lerp(1150, 170, wx.dark) * lerp(0.75, 1, dayF);
+    // distance is the haze pass's job on fine days (height fog from the depth buffer); this fog only closes in
+    // for storms, and the water shader shares it
+    scene.fog.near = lerp(3500, 25, wx.dark) * lerp(0.7, 1, dayF);
+    scene.fog.far = lerp(5000, 170, wx.dark) * lerp(0.75, 1, dayF);
+    hazeU.uHaze.value.copy(scene.fog.color).lerp(tmpB.set('#ffffff'), 0.12 * dayF);
+    hazeU.uSunDir.value.copy(world.sunDir); hazeU.uSunCol.value.copy(sunCol).multiplyScalar(dayF * (1 - wx.dark));
+    hazeU.uDens.value = 0.0011 / viewDist * lerp(1, 7, wx.dark) * lerp(1.25, 1, dayF);
+    hazeU.uDofNear.value = 150 * viewDist; hazeU.uDofFar.value = 750 * viewDist;
 
     // sun by day, moon by night (same light, flipped)
     const useMoon = sunUp < -0.02;
@@ -1287,7 +1466,7 @@ export function createWorld(canvas, game) {
     sky.position.copy(camera.position);
   };
 
-  world.render = () => { composer.render(); world.afterRender?.(); };
+  world.render = () => { if (reflOn) renderReflection(); composer.render(); world.afterRender?.(); };
   // build every shader the game can need while the loading screen is up, so nothing compiles mid-game
   // (rain, fireflies, the lightning bolt, the repaired ship and other hidden objects included)
   world.warmup = async () => {

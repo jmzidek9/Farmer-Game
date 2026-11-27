@@ -124,7 +124,7 @@ const SKELETON = `
 // ================================================================ createUI
 export function createUI(game) {
   // settings: defaults <- localStorage 'hh-settings' (main.js may already have merged them; harmless)
-  game.settings = Object.assign({ quality: 'high', sens: 1, music: 0.6, sfx: 0.8, name: 'Castaway', parallax: 1, sat: 1 }, game.settings || {});
+  game.settings = Object.assign({ quality: 'high', sens: 1, music: 0.6, sfx: 0.8, name: 'Castaway', parallax: 1, sat: 1, viewDist: 1, shadows: 'high', ao: true, dof: true, reflections: true }, game.settings || {});
   try { Object.assign(game.settings, JSON.parse(lsGet('hh-settings') || '{}')); } catch { /* bad json */ }
 
   let root = document.getElementById('ui');
@@ -826,8 +826,17 @@ export function createUI(game) {
               <label><input type="radio" name="quality" value="high" ${st.quality !== 'low' ? 'checked' : ''} data-f="qh"><span>High</span></label>
               <label><input type="radio" name="quality" value="low" ${st.quality === 'low' ? 'checked' : ''} data-f="ql"><span>Low</span></label>
             </div>
-            <p class="muted small">Low turns off god rays and softens shadows for slower computers.</p>
+            <p class="muted small">Low turns off god rays, bloom, reflections and ambient occlusion for slower computers.</p>
           </fieldset>
+          ${[['shadows', 'Shadows', [['high', 'High'], ['low', 'Low']], st.shadows ?? 'high'],
+             ['ao', 'Ambient occlusion', [['on', 'On'], ['off', 'Off']], st.ao === false ? 'off' : 'on'],
+             ['dof', 'Depth of field', [['on', 'On'], ['off', 'Off']], st.dof === false ? 'off' : 'on'],
+             ['reflections', 'Water reflections', [['on', 'On'], ['off', 'Off']], st.reflections === false ? 'off' : 'on']]
+            .map(([k, label, opts, cur]) => `<fieldset class="seg"><legend class="field-label">${label}</legend><div class="seg-row">${opts.map(([v, l]) =>
+              `<label><input type="radio" name="gfx-${k}" value="${v}" ${cur === v ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div></fieldset>`).join('')}
+          <label class="field-label" for="set-view">View distance <output id="o-view">${pct(st.viewDist ?? 1)}</output></label>
+          <input type="range" id="set-view" min="0.5" max="2" step="0.05" value="${st.viewDist ?? 1}" data-f="view">
+          <p class="muted small">How far you can see: draw distance, haze, shadow range and texture detail.</p>
           <label class="field-label" for="set-parallax">Ground depth (parallax) <output id="o-parallax">${pct(st.parallax ?? 1)}</output></label>
           <input type="range" id="set-parallax" min="0" max="2" step="0.05" value="${st.parallax ?? 1}" data-f="parallax">
           <label class="field-label" for="set-sat">Colour saturation <output id="o-sat">${pct(st.sat ?? 1)}</output></label>
@@ -1142,11 +1151,13 @@ export function createUI(game) {
     else if (t.id === 'set-sfx') { st.sfx = +t.value; E.panel.querySelector('#o-sfx').textContent = Math.round(st.sfx * 100) + '%'; saveSettings(); }
     else if (t.id === 'set-parallax') { st.parallax = +t.value; E.panel.querySelector('#o-parallax').textContent = Math.round(st.parallax * 100) + '%'; saveSettings(); }
     else if (t.id === 'set-sat') { st.sat = +t.value; E.panel.querySelector('#o-sat').textContent = Math.round(st.sat * 100) + '%'; saveSettings(); }
+    else if (t.id === 'set-view') { st.viewDist = +t.value; E.panel.querySelector('#o-view').textContent = Math.round(st.viewDist * 100) + '%'; game.world?.applyGraphics?.(); saveSettings(); }
   });
   E.panel.addEventListener('change', e => {
     const t = e.target, st = game.settings;
     if (t.id === 'mk') game.do({ type: 'marketSet', bid: ctx.bid, mult: +t.value / 100 });
     else if (t.name === 'quality') { st.quality = t.value; game.setQuality?.(t.value); saveSettings(); }
+    else if (t.name?.startsWith('gfx-')) { const k = t.name.slice(4); st[k] = t.value === 'on' ? true : t.value === 'off' ? false : t.value; game.world?.applyGraphics?.(); saveSettings(); }
     else if (t.id === 'set-name') {
       const name = t.value.trim().slice(0, 16) || 'Castaway';
       t.value = name;

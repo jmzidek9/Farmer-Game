@@ -14,7 +14,7 @@ import { heightAt } from './terrain.js';
 
 const SAVE_KEY = 'hh-save-2',   // v2: farm grid moved to the south beach; v1 saves stay under 'hh-save', unused
       SETTINGS_KEY = 'hh-settings';
-const DEFAULTS = { quality: 'high', sens: 1, music: 0.6, sfx: 0.8, name: 'Castaway', parallax: 1, sat: 1 };
+const DEFAULTS = { quality: 'high', sens: 1, music: 0.6, sfx: 0.8, name: 'Castaway', parallax: 1, sat: 1, viewDist: 1, shadows: 'high', ao: true, dof: true, reflections: true };
 
 const listeners = {};
 const game = {

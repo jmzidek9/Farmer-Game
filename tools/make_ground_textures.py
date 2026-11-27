@@ -307,5 +307,6 @@ def sand():
     g.mesh('sand'); render(sc, 'sand', 0.012)
 
 
-for job in (grass, soil, sand):
-    job()
+if __name__ == '__main__':   # tools/make_material_textures.py imports the helpers above
+    for job in (grass, soil, sand):
+        job()

@@ -73,7 +73,9 @@ def mountain(X, Z):
     warp = (fbm(X * 0.035 - 20, Z * 0.035 + 8) - 0.5) * 2.6 + (fbm(X * 0.11 + 4, Z * 0.11 - 9) - 0.5) * 0.6
     k = m / S + warp
     f = k - np.floor(k)
-    terr = S * (np.floor(k) + smooth(0.6, 0.97, f))   # ledges stay level: the warp only moves where the cliffs fall
+    j = np.floor(k)
+    level = lambda j: S * (j + 0.38 * np.sin(j * 2.3 + 0.5))   # uneven steps: from a few metres to nearly 20
+    terr = level(j) + (level(j + 1) - level(j)) * smooth(0.6, 0.97, f)   # ledges stay level: the warp only moves where the cliffs fall
     w = smooth(4, 12, m) * (1 - smooth(MTOP + 10, MTOP + 30, m) * 0.6)
     return m * (1 - w) + terr * w
 

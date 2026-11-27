@@ -4,6 +4,7 @@
 // by an animation phase + amount the CPU advances each frame.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { withDetail, MAT } from './assets.js';
 
 const TAU = Math.PI * 2;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -50,7 +51,7 @@ function animMat(glsl, { side = THREE.FrontSide, rough = 0.6 } = {}) {
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + glsl);
   };
   m.customProgramCacheKey = () => glsl;
-  return m;
+  return withDetail(m, MAT.organic, 'wild');   // skin, shell and feather detail like every other model
 }
 function instanced(geo, mat, count) {
   const im = new THREE.InstancedMesh(geo, mat, count);

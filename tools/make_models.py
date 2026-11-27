@@ -15,7 +15,7 @@ SPECIAL = {  # name: (hex, emission, alpha)
     'glass': ('#bfe8ff', 0, 0.28), 'net': ('#7fbf6a', 0, 0.45), 'metal': ('#9aa3ab', 0, 1),
     'emit_warm': ('#ffc35a', 3, 1), 'emit_eye': ('#7df9ff', 4, 1), 'emit_fire': ('#ff7a1a', 5, 1),
     'emit_gold': ('#ffd447', 1.5, 1), 'shirt': ('#3a86c8', 0, 1), 'tint': ('#ffffff', 0, 1),
-    'sail': ('#f3e9d2', 0, 1), 'cloud': ('#ffffff', 0, 1),
+    'sail': ('#f3e9d2', 0, 1), 'cloud': ('#ffffff', 0, 1), 'leafcard': ('#ffffff', 0, 1),
 }
 
 
@@ -156,6 +156,61 @@ class Model:
         for f in [(0, 1, 5, 4), (2, 3, 4, 5), (0, 4, 3), (1, 2, 5), (0, 3, 2, 1)]:
             s.bm.faces.new([v[i] for i in f])
         return s._fin(v, col, 0)
+
+    def canopy(s, center, radius, scale=(1, 1, 1), n=40, size=0.7, hollow=0.45):
+        """A crown of crossed leaf cards (textured with the sprig atlas, cut out by its alpha). Cards sit through
+        the ellipsoid's outer shell with their sprigs pointing outward; the game lights them as one soft volume."""
+        uvl = s.bm.loops.layers.uv.verify()
+        c, sc = Vector(center), Vector(scale)
+        verts = []
+        for k in range(n):
+            d = Vector((random.gauss(0, 1), random.gauss(0, 1), random.gauss(0, 1) * 0.8 + 0.35)).normalized()
+            p = c + Vector((d.x * sc.x, d.y * sc.y, d.z * sc.z)) * radius * random.uniform(hollow, 1.0)
+            nrm = Vector((random.gauss(0, 1), random.gauss(0, 1), random.gauss(0, 1))).normalized()
+            up = (d - nrm * d.dot(nrm))
+            if up.length < 0.1:
+                up = nrm.orthogonal()
+            up.normalize()
+            side = up.cross(nrm).normalized()
+            w = radius * size * random.uniform(0.8, 1.2)
+            q = random.randrange(4); u0, v0 = (q % 2) * 0.5, (q // 2) * 0.5
+            for t_ax in (side, nrm):             # two crossed cards per sprig
+                base = p - up * w * 0.35
+                cs = [base - t_ax * w / 2, base + t_ax * w / 2, base + t_ax * w / 2 + up * w, base - t_ax * w / 2 + up * w]
+                vs = [s.bm.verts.new(v) for v in cs]
+                f = s.bm.faces.new(vs)
+                for lp, uv in zip(f.loops, ((u0, v0), (u0 + 0.5, v0), (u0 + 0.5, v0 + 0.5), (u0, v0 + 0.5))):
+                    lp[uvl].uv = uv
+                verts += vs
+        return s._fin(verts, 'leafcard', 0)
+
+    def rock(s, col, loc, r, scale=(1, 1, 1), rot=(0, 0, 0), sub=3, rough=0.32, moss=None):
+        """A sculpted boulder: a dense icosphere pushed in and out by fractal noise (cracks, ledges, chipped
+        faces), flattened where it sits, smooth shaded; moss on the up-facing parts if moss is a colour."""
+        from mathutils import noise
+        g = bmesh.ops.create_icosphere(s.bm, subdivisions=sub, radius=r, matrix=T(loc, rot, scale))
+        vs = g['verts']
+        c = Vector(loc); off = Vector((random.uniform(0, 50), random.uniform(0, 50), random.uniform(0, 50)))
+        for v in vs:
+            d = (v.co - c)
+            dn = d.normalized()
+            q = dn * 1.6 + off
+            h = noise.fractal(q, 0.75, 2.1, 5) * 0.75 + (noise.ridged_multi_fractal(q * 0.7, 0.9, 2.0, 3, 1.0, 2.0) - 1.0) * 0.25
+            v.co = c + d * (1 + h * rough)
+            v.co.z = max(v.co.z, c.z - r * scale[2] * 0.35)   # sits flat on the ground
+        sm = s.sm; s.sm = True
+        s._fin(vs, col, 0)
+        s.sm = sm
+        if moss:
+            mm = mat(moss)
+            if mm not in s.mats:
+                s.mats.append(mm)
+            bm_faces = {f for v in vs for f in v.link_faces}
+            for f in bm_faces:
+                f.normal_update()
+                if f.normal.z > 0.55 and noise.noise(f.calc_center_median() * 0.9 + off) > 0.05:
+                    f.material_index = s.mats.index(mm)
+        return s
 
     def done(s):
         bmesh.ops.recalc_face_normals(s.bm, faces=s.bm.faces[:])
@@ -368,9 +423,11 @@ def tree(tid, kind, pc, st):
     else:
         h = 1.6 * s
         m.cyl(DARKWOOD, (0, 0, 0), 0.17 * s, h, 7, 0.12 * s)
-        canopy = '#3f8a37' if tid != 'mango' else '#2f7a3a'
-        for (x, y, z, r) in [(0, 0, h + 0.5 * s, 1.0), (0.55, 0.2, h + 0.25 * s, 0.75), (-0.5, -0.25, h + 0.3 * s, 0.75), (0.05, 0.55, h + 0.2 * s, 0.7)]:
-            m.ball(canopy if r < 1 else '#4a9a3f', (x * s, y * s, z), r * s, 1, jit=0.05 * s)
+        for k in range(3):   # limbs into the crown
+            a = k * 120 + 15
+            m.cyl(DARKWOOD, (0, 0, h * 0.8), 0.07 * s, 0.9 * s, 6, 0.03, (math.sin(a * D2R) * 50, -math.cos(a * D2R) * 50, 0))
+        m.ball('#24502a', (0, 0, h + 0.45 * s), 0.75 * s, 2, (1.1, 1.1, 0.8))   # shaded heart of the crown
+        m.canopy((0, 0, h + 0.45 * s), 1.05 * s, (1.1, 1.1, 0.85), n=int(18 + 22 * s), size=0.62)
         if st == 3:
             for i in range(12):
                 a, el = i * 2.4, 0.2 + (i % 4) * 0.25
@@ -423,23 +480,19 @@ def jungle(name, seed, big):
     m = Model(name)
     h = 3.2 if big else 2.2
     s = 1.0 if big else 0.7
-    m.cyl('#6a4a30', (0, 0, 0), 0.34 * s + 0.06, h, 8, 0.2 * s)
+    m.cyl('#6a4a30', (0, 0, 0), 0.34 * s + 0.06, h, 16, 0.2 * s)
     for k in range(4):                          # root flare
         a = k * 90 + 20
         m.cone('#5e4129', (math.cos(a * D2R) * 0.22 * s, math.sin(a * D2R) * 0.22 * s, 0), 0.14 * s, 0.5 * s, 4, (math.sin(a * D2R) * 30, -math.cos(a * D2R) * 30, 0))
     for k in range(2 if big else 1):            # branches into the crown
         a = k * 170 + 30
         m.cyl('#6a4a30', (0, 0, h * 0.7), 0.1 * s, 1.3 * s, 6, 0.05, (math.sin(a * D2R) * 45, -math.cos(a * D2R) * 45, 0))
-    shades = ['#2c6e33', '#357d38', '#40903f', '#4f9f45']
-    n = 8 if big else 5
-    for i in range(n):                          # dome of leaf clumps: dark low and outside, bright on top
-        a = i * 2.39996
-        ring = 0.35 + 0.65 * ((i + 0.5) / n) ** 0.5
-        R0 = 1.7 * s
-        z = h + 0.3 * s + (1 - ring) * 1.2 * s + R(0, 0.3)
-        r = R0 * R(0.55, 0.75)
-        m.ball(shades[min(3, int((1 - ring) * 4 + R(0, 1)))], (math.cos(a) * ring * R0, math.sin(a) * ring * R0, z), r, 1, (1, 1, 0.8), jit=0.1 * s)
-    m.ball(shades[3], (0, 0, h + 1.5 * s), 1.0 * s, 1, (1, 1, 0.75), jit=0.08)
+    for k in range(4 if big else 3):            # more limbs reaching into the crown
+        a = k * (360 / (4 if big else 3)) + 70
+        m.cyl('#5e4129', (0, 0, h * 0.75), 0.08 * s, 1.5 * s, 6, 0.03, (math.sin(a * D2R) * 55, -math.cos(a * D2R) * 55, 0))
+    m.ball('#1f4a24', (0, 0, h + 1.0 * s), 1.3 * s, 2, (1, 1, 0.65))   # shaded heart of the crown, seen through the gaps
+    for (x, y, z, r, nn) in [(0, 0, h + 1.05 * s, 1.9, 70), (0.9, 0.4, h + 0.7 * s, 1.1, 24), (-0.8, -0.5, h + 0.75 * s, 1.1, 24)]:   # leaf-card crown
+        m.canopy((x * s, y * s, z), r * s, (1, 1, 0.72), n=int(nn * (1 if big else 0.7)), size=0.55)
     return m.done()
 
 
@@ -448,16 +501,14 @@ jungle('jungle_b', 5, False)
 for i, (nm, r) in enumerate([('rock_s', 0.45), ('rock_m', 0.8), ('rock_l', 1.4)]):
     random.seed(30 + i)
     m = Model(nm)
-    m.ball('#9a968b', (0, 0, r * 0.32), r, 1, (1.25, 1, 0.72), (0, 0, R(0, 90)), jit=r * 0.14)
-    m.ball('#86837a', (r * 0.62, r * 0.25, r * 0.12), r * 0.5, 1, (1.1, 1, 0.7), jit=r * 0.1)
-    m.ball('#aaa699', (-r * 0.25, -r * 0.1, r * 0.72), r * 0.55, 1, (1.2, 1, 0.45), jit=r * 0.08)   # paler worn top
-    if i:
-        m.ball('#5f8f3a', (-r * 0.15, r * 0.25, r * 0.86), r * 0.38, 1, (1.3, 1, 0.25), jit=r * 0.05)  # moss
-    for k in range(2 + i):
+    m.rock('#9a968b', (0, 0, r * 0.32), r, (1.25, 1, 0.72), (0, 0, R(0, 90)), sub=(4, 5, 5)[i], moss='#5f8f3a' if i else None)
+    m.rock('#86837a', (r * 0.62, r * 0.25, r * 0.12), r * 0.5, (1.1, 1, 0.7), sub=(3, 4, 4)[i])
+    for k in range(2 + i):   # loose stones round its foot
         a = R(0, 6.28)
-        m.ball('#8f8b80', (math.cos(a) * r * 1.35, math.sin(a) * r * 1.2, 0.02), r * R(0.12, 0.2), 0, (1.2, 1, 0.6), jit=0.01)
+        m.rock('#8f8b80', (math.cos(a) * r * 1.35, math.sin(a) * r * 1.2, 0.02), r * R(0.12, 0.2), (1.2, 1, 0.6), sub=3, rough=0.25)
     m.done()
-Model('bush_a').ball('#3f8f3a', (0, 0, 0.4), 0.55, 1, (1.2, 1, 0.8), jit=0.06).ball('#4fa344', (0.4, 0.2, 0.35), 0.4, 1, jit=0.05).done()
+random.seed(77)
+Model('bush_a').ball('#2f6330', (0, 0, 0.36), 0.32, 2, (1.2, 1, 0.8)).canopy((0, 0, 0.45), 0.62, (1.25, 1.1, 0.85), n=46, size=0.7, hollow=0.2).done()
 m = Model('fern')
 for i in range(7):
     a = i * 51

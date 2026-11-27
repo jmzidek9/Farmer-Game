@@ -16,9 +16,10 @@ for f in sorted(os.listdir(os.path.join(ROOT, 'src'))):
         imports['hh/' + f[:-3]] = 'data:text/javascript;base64,' + b64(src.encode())
 
 pack = {'glb': 'data:model/gltf-binary;base64,' + b64(read('assets/models.glb', 'rb')),
+        'mountain': 'data:model/gltf-binary;base64,' + b64(read('assets/mountain.glb', 'rb')),
         'heights': 'data:application/json;base64,' + b64(read('assets/heights.json', 'rb')),
-        'tex': {f[:-4]: 'data:image/jpeg;base64,' + b64(read('assets/textures/' + f, 'rb'))
-                for f in sorted(os.listdir(os.path.join(ROOT, 'assets/textures'))) if f.endswith('.jpg')}}
+        'tex': {f[:-4]: ('data:image/png;base64,' if f.endswith('.png') else 'data:image/jpeg;base64,') + b64(read('assets/textures/' + f, 'rb'))
+                for f in sorted(os.listdir(os.path.join(ROOT, 'assets/textures'))) if f.endswith(('.jpg', '.png'))}}
 
 html = re.sub(r'<script type="importmap">.*?</script>', lambda _: '<script type="importmap">' + json.dumps({'imports': imports}) + '</script>', html, flags=re.S)
 html = html.replace('<link rel="stylesheet" href="styles.css">', '<style>' + read('styles.css') + '</style>')
