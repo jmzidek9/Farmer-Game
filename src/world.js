@@ -1145,6 +1145,7 @@ export function createWorld(canvas, game) {
   ao.updateGtaoMaterial({ radius: 0.7, distanceExponent: 1.4, thickness: 1.2, scale: 1.15, samples: 12 });
   ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 12 });
   ao.blendIntensity = 0.55;
+  ao.setGBuffer(renderPass.rt.depthTexture);   // the scene's own depth: leaf cards count only where there are leaves (normals come from depth)
   const godU = { tDiffuse: { value: null }, uSun: { value: new THREE.Vector2(0.5, 0.5) }, uStrength: { value: 0 }, uTint: { value: C('#ffe2b0') } };
   const godRays = new ShaderPass({
     uniforms: godU,

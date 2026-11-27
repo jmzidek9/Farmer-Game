@@ -243,60 +243,105 @@ G.HEIGHT.update({'mat_wood': (-0.006, 0.004), 'mat_bark': (-0.016, 0.012), 'mat_
 AO = {'wood': 0.01, 'bark': 0.02, 'leaf': 0.04, 'stone': 0.02, 'thatch': 0.03, 'fabric': 0.006, 'metal': 0.006, 'organic': 0.008, 'plaster': 0.01, 'cliff': 0.08}
 
 def leafcard():
-    """2 x 2 atlas of leafy sprigs on a transparent background (mat_leafcard_albedo.png): the cards tree crowns
-    and bushes are built from. Each cell: a twig with alternate leaves fanning off it and a leaf at the tip."""
+    """2 x 2 atlas of dense leafy twig clusters on a transparent background, the cards tree crowns and bushes are
+    built from (like a broadleaf tree's foliage atlas): a forked twig, 40-60 ovate leaves with serrated edges,
+    cupped and twisted at different angles, veined, varied from fresh yellow-green to deep green with the odd
+    tired leaf. Writes mat_leafcard_albedo.png (colour + crevice shadow, alpha) and mat_leafcard_normal.png
+    (each leaf's own facing, so the cards shade leaf by leaf in the game)."""
     import bpy
-    sc = G.reset(); rng = np.random.default_rng(777); g = Geo()
-    G.RES = 1024
+    sc = G.reset(); rng = np.random.default_rng(778); g = Geo()
     sc.render.resolution_x = sc.render.resolution_y = 1024
-    greens = [srgb(c) for c in ('#3b7a2c', '#4a8a34', '#2f6a26', '#56973a', '#64a442', '#41802e', '#6eaa48')]
-    ring = 18
+    sc.cycles.samples = 32
+    greens = [srgb(c) for c in ('#4f6e2b', '#5e7c31', '#3e5a24', '#6c8a3a', '#7c9440', '#56722d', '#465f27', '#869a46')]
+    old = [srgb(c) for c in ('#9a8a3e', '#a07a3a')]
+    ring = 28
 
-    def leaf(x, y, z, a, L, W, col):
-        vs, cs = [[0.0, 0.0, 0.0]], [col * 0.85]
+    def rot3(yaw, pitch, roll):
+        cy, sy, cp, sp, cr, sr = math.cos(yaw), math.sin(yaw), math.cos(pitch), math.sin(pitch), math.cos(roll), math.sin(roll)
+        Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
+        Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
+        Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
+        return Rz @ Ry @ Rx
+
+    def leaf(p, yaw, L, W, col, z):
+        # outline: ovate, widest a third of the way up, drawn-out tip, fine teeth along the edge
+        vs, cs = [[0.0, 0.0, 0.0]], [col * 0.8]
         for i in range(ring):
             t = i / ring * math.tau
-            u = math.cos(t) * 0.5 + 0.5
-            px = u * L; py = math.sin(t) * 0.5 * W * math.sin(max(0.04, u) * math.pi) ** 0.55
-            vs.append([px, py, 0.25 * L * u * (1 - u)]); cs.append(col * (0.95 + 0.25 * u))
-        vs = np.array(vs)
-        ca, sa = math.cos(a), math.sin(a)
-        vs = vs @ np.array([[ca, sa, 0], [-sa, ca, 0], [0, 0, 1]]) + [x, y, z]
-        g.add(vs, [[0, 1 + i, 1 + (i + 1) % ring] for i in range(ring)], np.array(cs), 0.5)
-        d = np.array([ca, sa]); sd = np.array([-sa, ca]); w = L * 0.012   # pale midrib
-        mid = np.array([[x - sd[0] * w, y - sd[1] * w, z + 0.004], [x + sd[0] * w, y + sd[1] * w, z + 0.004],
-                        [x + d[0] * L * 0.9, y + d[1] * L * 0.9, z + 0.004 + 0.05 * L]])
-        g.add(mid, [[0, 1, 2]], col * 1.45, 0.5)
+            u = math.cos(t) * 0.5 + 0.5                      # 0 at the stalk, 1 at the tip
+            prof = math.sin(max(0.03, u) * math.pi) ** 0.7 * (1.15 - 0.45 * u)
+            teeth = 1 + 0.06 * (1 if i % 2 else -1) * (0.3 < u < 0.95)
+            px = u * L
+            py = math.sin(t) * 0.5 * W * prof * teeth
+            pz = 0.22 * W * (abs(py) / (0.5 * W + 1e-9)) ** 2 - 0.12 * L * u * u   # cupped, the tip bending down
+            vs.append([px, py, pz]); cs.append(col * (0.88 + 0.22 * u) * (1.06 if abs(py) > 0.35 * W else 1.0))
+        R3 = rot3(yaw, rng.uniform(-0.45, 0.35), rng.uniform(-0.7, 0.7))
+        vs = (np.array(vs) @ R3.T) + [p[0], p[1], z]
+        g.add(vs, [[0, 1 + i, 1 + (i + 1) % ring] for i in range(ring)], np.array(cs), 0.45)
+        def vein(a, b, w, c):
+            a, b = np.array(a, float) @ R3.T + [p[0], p[1], z + 0.0006], np.array(b, float) @ R3.T + [p[0], p[1], z + 0.0006]
+            d = b - a; s = np.cross(d, [0, 0, 1]); s = s / (np.linalg.norm(s) + 1e-9) * w
+            g.add(np.array([a - s, a + s, b]), [[0, 1, 2]], c, 0.45)
+        vein([0, 0, 0], [L * 0.92, 0, -0.1 * L * 0.85], L * 0.012, col * 1.4)
+        for k in range(5):                                     # side veins running to the edge
+            u0 = 0.15 + k * 0.15
+            for sgn in (-1, 1):
+                vein([L * u0, 0, -0.12 * L * u0 * u0], [L * (u0 + 0.14), sgn * W * 0.38 * math.sin(min(1, u0 + 0.1) * math.pi), 0], L * 0.005, col * 1.2)
+
+    def twig(a, b, w):
+        d = np.array(b) - np.array(a); s = np.array([-d[1], d[0]]); s = s / (np.linalg.norm(s) + 1e-9) * w
+        g.add(np.array([[*(np.array(a) - s), -0.004], [*(np.array(a) + s), -0.004], [*(np.array(b) + s * 0.5), -0.002], [*(np.array(b) - s * 0.5), -0.002]]),
+              [[0, 1, 2], [0, 2, 3]], srgb('#5b4632'), 0.8)
 
     for cell in range(4):
         cx, cy = (cell % 2) * 0.5 + 0.25, (cell // 2) * 0.5 + 0.25
-        base = np.array([cx + rng.uniform(-0.03, 0.03), cy - 0.23]); tip = np.array([cx + rng.uniform(-0.06, 0.06), cy + 0.14])
-        pts = [base + (tip - base) * t + np.array([math.sin(t * 3 + cell) * 0.02, 0]) for t in np.linspace(0, 1, 9)]
-        for p, q in zip(pts, pts[1:]):   # the twig
-            d = (q - p) / np.linalg.norm(q - p); sd = np.array([-d[1], d[0]]) * 0.0035
-            g.add(np.array([[*(p - sd), 0.0], [*(p + sd), 0.0], [*(q + sd), 0.002], [*(q - sd), 0.002]]), [[0, 1, 2], [0, 2, 3]], srgb('#5a4030'), 0.8)
-        n = 11 + cell * 2
-        for k in range(n):
-            t = 0.12 + 0.85 * k / n
-            p = base + (tip - base) * t
-            side = 1 if k % 2 else -1
-            up = math.atan2(*(tip - base)[::-1])
-            a = up + side * rng.uniform(0.7, 1.25)
-            L = rng.uniform(0.09, 0.14) * (1.05 - 0.35 * t); W = L * rng.uniform(0.38, 0.5)
-            col = greens[rng.integers(len(greens))] * rng.uniform(0.85, 1.12)
-            leaf(p[0], p[1], 0.003 + k * 0.0012, a, L, W, col)
-        leaf(tip[0], tip[1], 0.03, math.atan2(*(tip - base)[::-1]), 0.075, 0.035, greens[4])
+        base = np.array([cx + rng.uniform(-0.04, 0.04), cy - 0.235])
+        tip = np.array([cx + rng.uniform(-0.05, 0.05), cy + 0.12])
+        twig(base, tip, 0.004)
+        stems = [(base, tip)]
+        for k in range(6):                                     # side shoots fanning off the main twig
+            t = 0.18 + k * 0.13
+            s0 = base + (tip - base) * t
+            side = 1 if (k + cell) % 2 else -1
+            ang = math.atan2(*(tip - base)[::-1]) + side * rng.uniform(0.55, 1.15)
+            ln = rng.uniform(0.12, 0.19) * (1.1 - 0.4 * t)
+            s1 = s0 + ln * np.array([math.cos(ang), math.sin(ang)])
+            s1 = np.clip(s1, [cx - 0.2, cy - 0.2], [cx + 0.2, cy + 0.2])
+            twig(s0, s1, 0.0025)
+            stems.append((s0, s1))
+        n = 95 + cell * 8
+        for k in range(n):                                     # leaves on short stalks along every stem, alternating sides
+            a0, b0 = stems[k % len(stems)]
+            t = rng.uniform(0.15, 1.0)
+            p = a0 + (b0 - a0) * t
+            up = math.atan2(*(b0 - a0)[::-1])
+            yaw = up + (1 if k % 2 else -1) * rng.uniform(0.35, 1.2) + rng.normal(0, 0.15)
+            L = rng.uniform(0.05, 0.085) * (1.1 - 0.3 * t); W = L * rng.uniform(0.5, 0.62)
+            col = (old[rng.integers(2)] if rng.random() < 0.04 else greens[rng.integers(len(greens))]) * rng.uniform(0.85, 1.15)
+            p = np.clip(p, [cx - 0.21 + L * 0.5, cy - 0.21], [cx + 0.21 - L * 0.5, cy + 0.2])
+            leaf(p, yaw, L, W, col, rng.uniform(0.0, 0.03))
     g.mesh('leafcard')
-    m = G.material('albedo', 0.03)
-    for ob in sc.collection.objects:
-        if ob.type == 'MESH':
-            ob.data.materials.clear(); ob.data.materials.append(m)
     sc.render.film_transparent = True
     sc.render.image_settings.file_format = 'PNG'; sc.render.image_settings.color_mode = 'RGBA'
-    sc.view_settings.view_transform = 'Standard'
-    sc.render.filepath = os.path.abspath(os.path.join(OUT, 'mat_leafcard_albedo.png'))
-    bpy.ops.render.render(write_still=True)
-    print('wrote', sc.render.filepath)
+    for kind in ('albedo', 'normal'):
+        if kind == 'albedo':
+            m = G.material('albedo', 0.02)
+            sc.view_settings.view_transform = 'Standard'
+        else:   # tangent-space normal map (x right, y up, z out of the card), the OpenGL convention three.js uses
+            m = bpy.data.materials.new('nrm'); m.use_nodes = True
+            N = m.node_tree.nodes; Lk = m.node_tree.links
+            for nd in list(N): N.remove(nd)
+            out = N.new('ShaderNodeOutputMaterial'); em = N.new('ShaderNodeEmission'); geo = N.new('ShaderNodeNewGeometry')
+            mp = N.new('ShaderNodeVectorMath'); mp.operation = 'MULTIPLY_ADD'
+            mp.inputs[1].default_value = (0.5, 0.5, 0.5); mp.inputs[2].default_value = (0.5, 0.5, 0.5)
+            Lk.new(geo.outputs['Normal'], mp.inputs[0]); Lk.new(mp.outputs[0], em.inputs['Color']); Lk.new(em.outputs[0], out.inputs['Surface'])
+            sc.view_settings.view_transform = 'Raw'
+        for ob in sc.collection.objects:
+            if ob.type == 'MESH':
+                ob.data.materials.clear(); ob.data.materials.append(m)
+        sc.render.filepath = os.path.abspath(os.path.join(OUT, f'mat_leafcard_{kind}.png'))
+        bpy.ops.render.render(write_still=True)
+        print('wrote', sc.render.filepath)
 
 
 if __name__ == '__main__':

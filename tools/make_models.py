@@ -157,31 +157,69 @@ class Model:
             s.bm.faces.new([v[i] for i in f])
         return s._fin(v, col, 0)
 
-    def canopy(s, center, radius, scale=(1, 1, 1), n=40, size=0.7, hollow=0.45):
-        """A crown of crossed leaf cards (textured with the sprig atlas, cut out by its alpha). Cards sit through
-        the ellipsoid's outer shell with their sprigs pointing outward; the game lights them as one soft volume."""
+    def tube(s, col, pts, radii, seg=8, bump=0.0, seed=0.0):
+        """A smooth, tapering branch along a polyline (rings carried along without twisting), lumpy bark if bump."""
+        from mathutils import noise
+        pts = [Vector(p) for p in pts]
+        rings, prev_side = [], None
+        for i, p in enumerate(pts):
+            d = (pts[min(i + 1, len(pts) - 1)] - pts[max(i - 1, 0)]).normalized()
+            side = d.orthogonal().normalized() if prev_side is None else (prev_side - d * prev_side.dot(d)).normalized()
+            prev_side = side
+            up = d.cross(side)
+            ring = []
+            for k in range(seg):
+                a = k / seg * math.tau
+                o = side * math.cos(a) + up * math.sin(a)
+                r = radii[i] * (1 + bump * noise.noise(p * 2.2 + o * 0.6 + Vector((seed, 0, 0))))
+                ring.append(s.bm.verts.new(p + o * r))
+            rings.append(ring)
+        verts = [v for r in rings for v in r]
+        for a, b in zip(rings, rings[1:]):
+            for k in range(seg):
+                s.bm.faces.new((a[k], a[(k + 1) % seg], b[(k + 1) % seg], b[k]))
+        sm = s.sm; s.sm = True
+        s._fin(verts, col, 0)
+        s.sm = sm
+        return s
+
+    def leafcards(s, spots, center, crown_r, size, pairs=2):
+        """Leaf clusters (crossed cards with the twig atlas, cut out by alpha) at spots [(pos, dir), ...]. Each card's
+        vertex colour carries its shading: darker deep inside the crown and underneath, sunlit yellow-green on top,
+        bluer in the shade, plus a little random variation, like a real crown."""
         uvl = s.bm.loops.layers.uv.verify()
-        c, sc = Vector(center), Vector(scale)
+        col = s.bm.verts.layers.float_color.get('Col') or s.bm.verts.layers.float_color.new('Col')
+        c = Vector(center)
         verts = []
-        for k in range(n):
-            d = Vector((random.gauss(0, 1), random.gauss(0, 1), random.gauss(0, 1) * 0.8 + 0.35)).normalized()
-            p = c + Vector((d.x * sc.x, d.y * sc.y, d.z * sc.z)) * radius * random.uniform(hollow, 1.0)
-            nrm = Vector((random.gauss(0, 1), random.gauss(0, 1), random.gauss(0, 1))).normalized()
-            up = (d - nrm * d.dot(nrm))
-            if up.length < 0.1:
-                up = nrm.orthogonal()
-            up.normalize()
-            side = up.cross(nrm).normalized()
-            w = radius * size * random.uniform(0.8, 1.2)
-            q = random.randrange(4); u0, v0 = (q % 2) * 0.5, (q // 2) * 0.5
-            for t_ax in (side, nrm):             # two crossed cards per sprig
-                base = p - up * w * 0.35
-                cs = [base - t_ax * w / 2, base + t_ax * w / 2, base + t_ax * w / 2 + up * w, base - t_ax * w / 2 + up * w]
-                vs = [s.bm.verts.new(v) for v in cs]
-                f = s.bm.faces.new(vs)
-                for lp, uv in zip(f.loops, ((u0, v0), (u0 + 0.5, v0), (u0 + 0.5, v0 + 0.5), (u0, v0 + 0.5))):
-                    lp[uvl].uv = uv
-                verts += vs
+        for p, d in spots:
+            p = Vector(p); rel = p - c
+            radial = min(1.0, (Vector((rel.x, rel.y, rel.z * 1.3))).length / max(crown_r, 1e-3))
+            top = max(0.0, min(1.0, rel.z / max(crown_r, 1e-3) * 0.8 + 0.5))
+            ao = 0.42 + 0.58 * min(1.0, max(0.0, (radial - 0.25) / 0.7)) ** 0.8
+            ao *= 0.78 + 0.22 * top
+            warm = top * 0.6 + random.uniform(-0.15, 0.25)
+            tint = Vector((0.86, 0.94, 1.0)).lerp(Vector((1.1, 1.06, 0.78)), max(0.0, min(1.0, warm)))
+            tint *= random.uniform(0.88, 1.08)
+            out = (Vector(d) * 0.6 + rel.normalized() * 0.7 + Vector((0, 0, 0.25))).normalized()
+            for k in range(pairs):
+                w = size * random.uniform(0.8, 1.25)
+                nrm = Vector((random.gauss(0, 1), random.gauss(0, 1), random.gauss(0, 1))).normalized()
+                up = (out - nrm * out.dot(nrm))
+                if up.length < 0.1:
+                    up = nrm.orthogonal()
+                up.normalize()
+                side = up.cross(nrm).normalized()
+                q = random.randrange(4); u0, v0 = (q % 2) * 0.5, (q // 2) * 0.5
+                for t_ax in (side, nrm):
+                    base = p - up * w * 0.18
+                    cs = [base - t_ax * w / 2, base + t_ax * w / 2, base + t_ax * w / 2 + up * w, base - t_ax * w / 2 + up * w]
+                    vs = [s.bm.verts.new(v) for v in cs]
+                    for v in vs:
+                        v[col] = (tint.x * ao, tint.y * ao, tint.z * ao, 1.0)
+                    f = s.bm.faces.new(vs)
+                    for lp, uv in zip(f.loops, ((u0, v0), (u0 + 0.5, v0), (u0 + 0.5, v0 + 0.5), (u0, v0 + 0.5))):
+                        lp[uvl].uv = uv
+                    verts += vs
         return s._fin(verts, 'leafcard', 0)
 
     def rock(s, col, loc, r, scale=(1, 1, 1), rot=(0, 0, 0), sub=3, rough=0.32, moss=None):
@@ -219,9 +257,90 @@ class Model:
         s.bm.free()
         for m in s.mats:
             me.materials.append(m)
+        if len(me.color_attributes):
+            me.color_attributes.active_color = me.color_attributes[0]
+            me.color_attributes.render_color_index = 0
         ob = bpy.data.objects.new(s.name, me)
         bpy.context.scene.collection.objects.link(ob)
         return ob
+
+
+def grow_tree(m, seed, height, crown_r, trunk_r, limbs=5, leaf=1.1, bark='#6a4a30', clear=0.5, pairs=2, sub=4):
+    """A broadleaf tree grown branch by branch: a leaning, bumpy trunk with a root flare; limbs splitting off its
+    upper half, reaching up and out; branches off the limbs; leaf clusters all along the branches and at their
+    tips. clear: fraction of the height that is bare trunk. Returns the leaf spots (for fruit)."""
+    random.seed(seed)
+    spots = []
+    top = Vector((0, 0, height * 0.62))
+
+    def branch(p0, d0, L, r0, lvl):
+        n = 9 if lvl == 0 else 6 if lvl == 1 else 4
+        pts, radii, d, p = [p0.copy()], [r0], d0.copy(), p0.copy()
+        for i in range(1, n + 1):
+            t = i / n
+            pull = Vector((0, 0, 0.08 if lvl == 0 else 0.05 if lvl == 1 else -0.03))   # trunk and limbs reach up, twigs droop
+            d = (d + Vector((random.gauss(0, 1), random.gauss(0, 1), random.gauss(0, 1))) * (0.07 if lvl == 0 else 0.16) + pull).normalized()
+            p = p + d * (L / n)
+            pts.append(p.copy()); radii.append(max(0.012, r0 * (1 - 0.72 * t)))
+        m.tube(bark, pts, radii, seg=(12, 8, 5)[lvl], bump=(0.18, 0.08, 0.0)[lvl], seed=seed + lvl)
+        if lvl < 2:
+            nk = limbs if lvl == 0 else sub + random.randint(0, 1)
+            for k in range(nk):
+                t = (clear + (1 - clear) * (k + random.uniform(0.2, 0.8)) / nk) if lvl == 0 else random.uniform(0.3, 0.95)
+                i = min(n - 1, int(t * n))
+                pk, dk = pts[i], (pts[i + 1] - pts[i]).normalized()
+                side = dk.orthogonal().normalized()
+                rot = Matrix.Rotation(k * 2.39996 + random.uniform(-0.4, 0.4) + seed, 3, dk)
+                side = rot @ side
+                ang = math.radians(random.uniform(38, 62) if lvl == 0 else random.uniform(30, 55))
+                cd = (dk * math.cos(ang) + side * math.sin(ang)).normalized()
+                if lvl == 0:
+                    cd = (cd + Vector((0, 0, 0.25))).normalized()
+                    Lk = crown_r * random.uniform(0.8, 1.05) * (1.15 - 0.4 * t)
+                else:
+                    Lk = L * random.uniform(0.5, 0.75)
+                branch(pk, cd, Lk, radii[i] * (0.55 if lvl == 0 else 0.6), lvl + 1)
+            if lvl == 0:   # the leader carries on into the top of the crown
+                branch(pts[-1], d, crown_r * 0.7, radii[-1], 1)
+        else:
+            for t in (0.3, 0.55, 0.8, 1.0):
+                i = min(n, int(round(t * n)))
+                spots.append((pts[i], (pts[i] - pts[max(0, i - 1)]).normalized()))
+
+    branch(Vector((0, 0, -0.15)), Vector((random.uniform(-0.08, 0.08), random.uniform(-0.08, 0.08), 1)).normalized(), height * 0.55, trunk_r, 0)
+    for k in range(5):                                         # root flare
+        a = k * 72 + random.uniform(-15, 15)
+        dd = Vector((math.cos(math.radians(a)), math.sin(math.radians(a)), 0))
+        m.tube(bark, [dd * trunk_r * 0.2 + Vector((0, 0, trunk_r * 1.6)), dd * trunk_r * 1.1 + Vector((0, 0, trunk_r * 0.4)), dd * trunk_r * 1.9 + Vector((0, 0, -0.1))],
+               [trunk_r * 0.45, trunk_r * 0.32, trunk_r * 0.12], seg=6)
+    cz = sum(p.z for p, _ in spots) / max(1, len(spots))
+    cxy = sum((p for p, _ in spots), Vector()) / max(1, len(spots))
+    m.leafcards(spots, (cxy.x, cxy.y, cz), crown_r, leaf, pairs)
+    return spots
+
+
+def grow_shrub(m, seed, h, w, leaf=0.6, stems=6, bark='#5e4632'):
+    """A shrub: several stems from the ground, arching out, each forking once, leaves all along them."""
+    random.seed(seed)
+    spots = []
+    for k in range(stems):
+        a = k / stems * math.tau + random.uniform(-0.3, 0.3)
+        out = Vector((math.cos(a), math.sin(a), 0))
+        p, d = Vector((out.x * 0.05, out.y * 0.05, 0)), (out * random.uniform(0.35, 0.7) * w / max(0.5, h) + Vector((0, 0, 1))).normalized()
+        pts = [p.copy()]
+        for i in range(4):
+            d = (d + Vector((random.gauss(0, 0.12), random.gauss(0, 0.12), -0.05))).normalized()
+            p = p + d * h / 4
+            pts.append(p.copy())
+        m.tube(bark, pts, [0.03, 0.025, 0.018, 0.012, 0.008], seg=5)
+        for i in (1, 2, 3, 4):
+            spots.append((pts[i], d))
+        fk = pts[2]; fd = (d + out * 0.8).normalized()
+        q = fk + fd * h * 0.4
+        m.tube(bark, [fk, q], [0.015, 0.008], seg=4)
+        spots.append((q, fd)); spots.append(((fk + q) / 2, fd))
+    m.leafcards(spots, (0, 0, h * 0.55), max(w, h) * 0.6, leaf, 2)
+    return spots
 
 
 R = random.uniform
@@ -421,18 +540,12 @@ def tree(tid, kind, pc, st):
                 a = i * 1.05
                 m.ball(pc, (math.cos(a) * 0.16, math.sin(a) * 0.16, h - 0.35 - (i % 2) * 0.2), 0.12, 1, (1, 1, 1.4))
     else:
-        h = 1.6 * s
-        m.cyl(DARKWOOD, (0, 0, 0), 0.17 * s, h, 7, 0.12 * s)
-        for k in range(3):   # limbs into the crown
-            a = k * 120 + 15
-            m.cyl(DARKWOOD, (0, 0, h * 0.8), 0.07 * s, 0.9 * s, 6, 0.03, (math.sin(a * D2R) * 50, -math.cos(a * D2R) * 50, 0))
-        m.ball('#24502a', (0, 0, h + 0.45 * s), 0.75 * s, 2, (1.1, 1.1, 0.8))   # shaded heart of the crown
-        m.canopy((0, 0, h + 0.45 * s), 1.05 * s, (1.1, 1.1, 0.85), n=int(18 + 22 * s), size=0.62)
-        if st == 3:
-            for i in range(12):
-                a, el = i * 2.4, 0.2 + (i % 4) * 0.25
-                rr = 0.95
-                m.ball(pc, (math.cos(a) * rr * math.cos(el), math.sin(a) * rr * math.cos(el), h + 0.4 + math.sin(el) * 0.6), 0.11, 1)
+        spots = grow_tree(m, sum(map(ord, tid)) * 7 + st, 3.6 * s, 1.35 * s, 0.16 * s, limbs=4, leaf=0.8 * s, bark='#5a4030', clear=0.38, sub=3)
+        if st == 3:   # fruit hanging on the outside of the crown
+            cz = sum(p.z for p, _ in spots) / len(spots)
+            outer = sorted(spots, key=lambda sd: -math.hypot(sd[0].x, sd[0].y) - abs(sd[0].z - cz) * 0.3)[:14]
+            for p, d in outer:
+                m.ball(pc, tuple(p - d * 0.12 - Vector((0, 0, 0.12))), 0.11, 2)
     if st == 0:
         m.ball(LEAF, (0, 0, 0.05), 0.12, 1, (1.5, 1.5, 0.4))
     return m.done()
@@ -476,25 +589,12 @@ palm_wild('palm_c', 5.2, 1.6, 3)
 
 
 def jungle(name, seed, big):
-    random.seed(seed)
     m = Model(name)
-    h = 3.2 if big else 2.2
-    s = 1.0 if big else 0.7
-    m.cyl('#6a4a30', (0, 0, 0), 0.34 * s + 0.06, h, 16, 0.2 * s)
-    for k in range(4):                          # root flare
-        a = k * 90 + 20
-        m.cone('#5e4129', (math.cos(a * D2R) * 0.22 * s, math.sin(a * D2R) * 0.22 * s, 0), 0.14 * s, 0.5 * s, 4, (math.sin(a * D2R) * 30, -math.cos(a * D2R) * 30, 0))
-    for k in range(2 if big else 1):            # branches into the crown
-        a = k * 170 + 30
-        m.cyl('#6a4a30', (0, 0, h * 0.7), 0.1 * s, 1.3 * s, 6, 0.05, (math.sin(a * D2R) * 45, -math.cos(a * D2R) * 45, 0))
-    for k in range(4 if big else 3):            # more limbs reaching into the crown
-        a = k * (360 / (4 if big else 3)) + 70
-        m.cyl('#5e4129', (0, 0, h * 0.75), 0.08 * s, 1.5 * s, 6, 0.03, (math.sin(a * D2R) * 55, -math.cos(a * D2R) * 55, 0))
-    m.ball('#1f4a24', (0, 0, h + 1.0 * s), 1.3 * s, 2, (1, 1, 0.65))   # shaded heart of the crown, seen through the gaps
-    for (x, y, z, r, nn) in [(0, 0, h + 1.05 * s, 1.9, 70), (0.9, 0.4, h + 0.7 * s, 1.1, 24), (-0.8, -0.5, h + 0.75 * s, 1.1, 24)]:   # leaf-card crown
-        m.canopy((x * s, y * s, z), r * s, (1, 1, 0.72), n=int(nn * (1 if big else 0.7)), size=0.55)
+    if big:   # a big spreading broadleaf, like the island's old forest trees
+        grow_tree(m, seed, 10.5, 4.4, 0.42, limbs=6, leaf=1.35, bark='#6b5a48', clear=0.42, sub=4)
+    else:     # a younger, narrower tree
+        grow_tree(m, seed, 7.0, 2.8, 0.26, limbs=5, leaf=1.1, bark='#6a5040', clear=0.38, sub=3)
     return m.done()
-
 
 jungle('jungle_a', 4, True)
 jungle('jungle_b', 5, False)
@@ -508,7 +608,7 @@ for i, (nm, r) in enumerate([('rock_s', 0.45), ('rock_m', 0.8), ('rock_l', 1.4)]
         m.rock('#8f8b80', (math.cos(a) * r * 1.35, math.sin(a) * r * 1.2, 0.02), r * R(0.12, 0.2), (1.2, 1, 0.6), sub=3, rough=0.25)
     m.done()
 random.seed(77)
-Model('bush_a').ball('#2f6330', (0, 0, 0.36), 0.32, 2, (1.2, 1, 0.8)).canopy((0, 0, 0.45), 0.62, (1.25, 1.1, 0.85), n=46, size=0.7, hollow=0.2).done()
+m = Model('bush_a'); grow_shrub(m, 77, 0.95, 0.9, leaf=0.62, stems=7); m.done()
 m = Model('fern')
 for i in range(7):
     a = i * 51
@@ -1919,7 +2019,7 @@ Model('sapling').cyl(WOOD2, (0, 0, 0), 0.025, 0.35, 5).ball(LEAF, (0, 0, 0.38), 
 
 # the island terrain + assets/heights.json come from tools/make_island.py (no Blender needed)
 
-bpy.ops.export_scene.gltf(filepath=os.path.join(OUT, 'models.glb'), export_format='GLB', export_yup=True, export_apply=False)
+bpy.ops.export_scene.gltf(filepath=os.path.join(OUT, 'models.glb'), export_format='GLB', export_yup=True, export_apply=False, export_vertex_color='ACTIVE')   # leaf cards carry their shading in vertex colours
 # meshopt compression (6.8 MB -> ~2 MB); the game loads it with three's MeshoptDecoder
 import shutil, subprocess
 _npx = shutil.which('npx')

@@ -300,11 +300,25 @@ export const mats = {
 // alpha, swaying in the wind; lit as one soft volume (see leafNormals) rather than as flat cards
 const leafTex = texLoader.load(window.HH_PACK?.tex?.mat_leafcard_albedo || 'assets/textures/mat_leafcard_albedo.png');
 leafTex.colorSpace = THREE.SRGBColorSpace; leafTex.anisotropy = 8;
-mats.leafcard = new THREE.MeshStandardMaterial({ map: leafTex, alphaTest: 0.42, side: THREE.DoubleSide, roughness: 0.7, metalness: 0 });
+const leafNrm = texLoader.load(window.HH_PACK?.tex?.mat_leafcard_normal || 'assets/textures/mat_leafcard_normal.png');
+leafNrm.anisotropy = 8;
+// vertex colour = the crown shading baked in Blender (deep inside / underneath darker, sunlit top warmer)
+mats.leafcard = new THREE.MeshStandardMaterial({ map: leafTex, normalMap: leafNrm, normalScale: new THREE.Vector2(0.9, 0.9), vertexColors: true,
+  alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.62, metalness: 0 });
 mats.leafcard.onBeforeCompile = sh => {
   inject(sh, { wind: true, ao: false });
+  sh.vertexShader = sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+    // leaves flutter: a quick shiver at the card tips on top of the branch sway
+    transformed += normal * sin(uTime * 7.3 + dot(position, vec3(13.1, 7.7, 11.3))) * .025 * uWind * uv.y;`);
   sh.fragmentShader = sh.fragmentShader.replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
-    reflectedLight.indirectDiffuse += diffuseColor.rgb * .18;   // light through the leaves`);
+    #if NUM_DIR_LIGHTS > 0
+      {   // sunlight through the leaves: looking toward the sun, the crown glows yellow-green
+        vec3 Ls = directionalLights[0].direction, Vv = normalize(vViewPosition);
+        float tr = pow(max(dot(Vv, -Ls), 0.), 3.) * .75 + .12;
+        reflectedLight.directDiffuse += diffuseColor.rgb * directionalLights[0].color * tr * vec3(1.05, 1.15, .55) * .55;
+      }
+    #endif
+    reflectedLight.indirectDiffuse += diffuseColor.rgb * .08;`);
 };
 mats.leafcard.customProgramCacheKey = () => 'hh-leafcard';
 const leafDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map: leafTex, alphaTest: 0.42, side: THREE.DoubleSide });
@@ -459,9 +473,9 @@ export async function loadAssets(onProgress = () => {}) {
       if (!o.isMesh) return;
       const name = o.material.name || '';
       const g = o.geometry.clone();
-      for (const k of ['position', 'normal', 'uv']) if (g.attributes[k]) g.setAttribute(k, toFloat(g.attributes[k]));   // meshopt stores them quantized
+      for (const k of ['position', 'normal', 'uv', 'color']) if (g.attributes[k]) g.setAttribute(k, toFloat(g.attributes[k]));   // meshopt stores them quantized
       g.applyMatrix4(o.matrixWorld);   // every model is exported at the origin; a meshopt node matrix also carries the dequantization scale
-      for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal' && !(k === 'uv' && name === 'leafcard')) g.deleteAttribute(k);
+      for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal' && !((k === 'uv' || k === 'color') && name === 'leafcard')) g.deleteAttribute(k);
       if (!g.attributes.normal) g.computeVertexNormals();
       g.morphAttributes = {};
       if (isSpecial(name)) {
