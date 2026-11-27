@@ -67,6 +67,29 @@ function toon(params, key, opt) {
   return m;
 }
 
+// realistic ground textures baked in Blender (tools/make_ground_textures.py): 1 m seamless tiles.
+// *_albedo: colour with crevice shadow; *_data: normal x/y in red/green, roughness in blue.
+const texLoader = new THREE.TextureLoader();
+function groundTexture(name, color) {
+  const t = texLoader.load(window.HH_PACK?.tex?.[name] || `assets/textures/${name}.jpg`);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = color ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+export const groundTex = Object.fromEntries(['grass', 'soil', 'sand'].flatMap(n => [
+  [n + 'A', groundTexture(n + '_albedo', true)], [n + 'D', groundTexture(n + '_data', false)]]));
+// GLSL: sample a tile twice (second copy turned, scaled, shifted) and blend by noise so the repeat doesn't show.
+// tileData returns the normal already turned back into the first copy's (= world) frame.
+export const TILE_GLSL = `
+  const mat2 TILE_R = mat2(.8, .6, -.6, .8);
+  vec4 tileAlbedo(sampler2D t, vec2 uv, float k){ return mix(texture2D(t, uv), texture2D(t, TILE_R * uv * .73 + vec2(.31, .57)), k); }
+  vec3 tileData(sampler2D t, vec2 uv, float k){
+    vec3 a = texture2D(t, uv).rgb, b = texture2D(t, TILE_R * uv * .73 + vec2(.31, .57)).rgb;
+    vec2 na = a.rg * 2. - 1., nb = (b.rg * 2. - 1.) * TILE_R;
+    return vec3(mix(na, nb, k), mix(a.b, b.b, k));
+  }`;
+
 const foliageDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, side: THREE.DoubleSide });
 foliageDepth.onBeforeCompile = sh => inject(sh, { wind: true, depth: true });
 foliageDepth.customProgramCacheKey = () => 'hh-foliage-depth';
@@ -84,6 +107,80 @@ export const mats = {
   metal: toon({ color: 0x9aa3ab }, 'hh-static', { ao: true }),
   tint: toon({ color: 0xffffff }, 'hh-static', { ao: true }),
 };
+// tilled soil beds: the baked soil texture projected from above, physically lit; watered beds (instance colour
+// below 1) go darker and glossy instead of only darker
+mats.soil = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
+mats.soil.onBeforeCompile = sh => {
+  sh.uniforms.tSoilA = { value: groundTex.soilA }; sh.uniforms.tSoilD = { value: groundTex.soilD };
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', `#include <common>
+      varying vec3 vSW; varying vec3 vSN; varying vec3 vSZ; varying float vSWet, vSFz;`)
+    .replace('#include <project_vertex>', `#include <project_vertex>
+      #ifdef USE_INSTANCING
+        mat4 sM = modelMatrix * instanceMatrix;
+      #else
+        mat4 sM = modelMatrix;
+      #endif
+      vSW = (sM * vec4(transformed, 1.)).xyz; vSN = normalize(mat3(sM) * objectNormal);
+      vSZ = normalize(mat3(sM) * vec3(0., 0., 1.)); vSFz = position.z;   // furrows run along the model's x, 0.45 m apart in z
+      vSWet = 0.;
+      #ifdef USE_INSTANCING_COLOR
+        vSWet = clamp((1. - instanceColor.r) / .38, 0., 1.);
+      #endif`);
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', `#include <common>
+      varying vec3 vSW; varying vec3 vSN; varying vec3 vSZ; varying float vSWet, vSFz; uniform sampler2D tSoilA, tSoilD;
+      float sh1(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float sn1(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
+        return mix(mix(sh1(i), sh1(i+vec2(1,0)), f.x), mix(sh1(i+vec2(0,1)), sh1(i+vec2(1,1)), f.x), f.y); }
+      ${TILE_GLSL}`)
+    .replace('#include <color_fragment>', `#include <color_fragment>
+      vec2 sq = vSW.xz * .8;
+      float sk = smoothstep(.35, .65, sn1(vSW.xz * .31 + 5.));
+      vec3 sTexC = tileAlbedo(tSoilA, sq, sk).rgb;
+      vec3 sDat = tileData(tSoilD, sq, sk);
+      float up = smoothstep(.2, .7, vSN.y);
+      // model colour (ridge / crest / base, already darkened when wet) tints the texture
+      diffuseColor.rgb = sTexC * diffuseColor.rgb / vec3(.105, .052, .022) * .55;
+      float sRough = mix(.95, max(sDat.z, .8), up);
+      // furrow profile: crest = 1, trough = -1; troughs sit in shadow and hold water when the bed is watered
+      #ifdef SOIL_FLAT
+        float fz = 0., fs = 0.;
+      #else
+        float fph = 6.2832 * (vSFz - .225) / .45, fz = cos(fph), fs = -sin(fph) * .42;
+      #endif
+      diffuseColor.rgb *= mix(.62, 1.1, fz * .5 + .5);
+      float puddle = vSWet * smoothstep(-.35, -.75, fz) * smoothstep(.55, .3, sn1(vSW.xz * 2.3));
+      diffuseColor.rgb *= 1. - puddle * .35;
+      sRough = mix(sRough, .03, puddle);`)
+    .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+      roughnessFactor = mix(sRough, .22, vSWet);`)
+    .replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>
+      float sSpec = mix(.25, 1., max(vSWet, puddle));
+      material.specularColor *= sSpec; material.specularF90 = sSpec;`)
+    .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+      {
+        vec2 tn = sDat.xy * 1.2 * up * (1. - vSWet * .4) * (1. - puddle);
+        vec3 wn = normalize(normalize(vSN) * sqrt(max(1. - dot(tn, tn), .05)) + vec3(tn.x, 0., tn.y) + vSZ * fs * up * (1. - puddle));
+        normal = normalize((viewMatrix * vec4(wn, 0.)).xyz);
+      }`);
+};
+mats.soil.customProgramCacheKey = () => 'hh-soil';
+mats.soilFlat = mats.soil.clone();   // the strips between beds across the furrows: no ridges
+mats.soilFlat.defines = { SOIL_FLAT: '' };
+mats.soilFlat.onBeforeCompile = mats.soil.onBeforeCompile;
+mats.soilFlat.customProgramCacheKey = () => 'hh-soil-flat';
+const isSoil = n => n.startsWith('soil_');
+const soilMat = n => (/_(side|corner)$/.test(n) ? mats.soilFlat : mats.soil);
+// soil lumps are flat-shaded low poly in the .glb; smooth their normals (by position, across colour seams) so ridges read as soft earth
+function smoothNormals(g) {
+  const p = g.attributes.position, nrm = g.attributes.normal, key = i => `${Math.round(p.getX(i) * 500)},${Math.round(p.getY(i) * 500)},${Math.round(p.getZ(i) * 500)}`;
+  const acc = new Map();
+  for (let i = 0; i < p.count; i++) { const k = key(i), a = acc.get(k) || [0, 0, 0]; a[0] += nrm.getX(i); a[1] += nrm.getY(i); a[2] += nrm.getZ(i); acc.set(k, a); }
+  for (let i = 0; i < p.count; i++) { const a = acc.get(key(i)), l = Math.hypot(...a) || 1; nrm.setXYZ(i, a[0] / l, a[1] / l, a[2] / l); }
+  nrm.needsUpdate = true;
+}
+
 const TRANSPARENT = new Set(['glass', 'net']);
 const isSpecial = n => n.startsWith('emit_') || ['glass', 'net', 'shirt', 'metal', 'tint', 'sail', 'cloud'].includes(n);
 const specialMat = n => (n.startsWith('emit_') ? mats.emit[n.slice(5)] || mats.emit.warm : mats[n]);
@@ -144,7 +241,8 @@ export async function loadAssets(onProgress = () => {}) {
     const sp = [...specials].map(([name, gs]) => ({ name, geo: merge(gs), mat: specialMat(name) }));
     for (const g of [geo, ...sp.map(s => s.geo)]) if (g) { g.computeBoundingBox(); g.computeBoundingSphere(); box.union(g.boundingBox); }
     if (box.isEmpty()) box.set(new THREE.Vector3(), new THREE.Vector3());
-    lib[root.name] = { geo, specials: sp, size: box.getSize(new THREE.Vector3()), top: box.max.y, box };
+    if (geo && isSoil(root.name)) smoothNormals(geo);
+    lib[root.name] = { geo, specials: sp, size: box.getSize(new THREE.Vector3()), top: box.max.y, box, soil: isSoil(root.name) && soilMat(root.name) };
   }
   onProgress(1, 'Ready');
   return lib;
@@ -184,7 +282,7 @@ export function makeMesh(name, opts = {}) {
   const e = lib[name];
   if (!e) { console.warn('[assets] unknown model', name); return g; }
   if (e.geo) {
-    const m = new THREE.Mesh(e.geo, opts.foliage ? mats.foliage : mats.static);
+    const m = new THREE.Mesh(e.geo, e.soil ? e.soil : opts.foliage ? mats.foliage : mats.static);
     m.castShadow = opts.castShadow !== false; m.receiveShadow = true;
     if (opts.foliage) m.customDepthMaterial = foliageDepth;
     g.add(m);
@@ -205,7 +303,7 @@ export function makeInstanced(name, capacity = 16, opts = {}) {
   const e = lib[name];
   if (!e) console.warn('[assets] unknown model', name);
   const parts = [];
-  if (e?.geo) parts.push({ geo: e.geo, mat: opts.foliage ? mats.foliage : mats.static, cast: opts.castShadow !== false, recv: true, foliage: !!opts.foliage });
+  if (e?.geo) parts.push({ geo: e.geo, mat: e.soil ? e.soil : opts.foliage ? mats.foliage : mats.static, cast: opts.castShadow !== false, recv: true, foliage: !!opts.foliage });
   for (const s of e?.specials || []) parts.push({ geo: s.geo, mat: partMat(s, opts), cast: castsShadow(s.name, opts), recv: !TRANSPARENT.has(s.name) });
   let n = 0;
   g.meshes = [];

@@ -8,9 +8,10 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutlinePass } from 'three/addons/postprocessing/OutlinePass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { Pass } from 'three/addons/postprocessing/Pass.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
-import { makeMesh, makeInstanced, lib, mats, uniforms, heights } from './assets.js';
+import { makeMesh, makeInstanced, lib, mats, uniforms, heights, groundTex, TILE_GLSL } from './assets.js';
 import { heightAt, pathAt } from './terrain.js';
 import { DAY_LEN, TIDE_HIGH, PIER, GRID, TILE, ORIGIN, ORIGIN_Z } from './data.js';
 
@@ -79,6 +80,22 @@ export function createWorld(canvas, game) {
   sun.shadow.mapSize.set(2048, 2048);
   scene.add(hemi, sun, sun.target);
 
+  // ---------------------------------------------------------------- reflected sky for physically lit surfaces
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const envU = { uZen: { value: new THREE.Color() }, uHor: { value: new THREE.Color() }, uGround: { value: new THREE.Color() },
+    uSunDir: { value: new THREE.Vector3(0, 1, 0) }, uSunCol: { value: new THREE.Color() } };
+  const envScene = new THREE.Scene();
+  envScene.add(new THREE.Mesh(new THREE.SphereGeometry(10, 32, 16), new THREE.ShaderMaterial({
+    uniforms: envU, side: THREE.BackSide, depthWrite: false,
+    vertexShader: 'varying vec3 vD; void main(){ vD = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }',
+    fragmentShader: `uniform vec3 uZen, uHor, uGround, uSunDir, uSunCol; varying vec3 vD;
+      void main(){ vec3 d = normalize(vD);
+        vec3 c = d.y > 0. ? mix(uHor, uZen, pow(d.y, .6)) : mix(uHor, uGround * .6, smoothstep(0., -.3, d.y));
+        c += uSunCol * pow(max(dot(d, uSunDir), 0.), 64.) * 6.;
+        gl_FragColor = vec4(c, 1.); }`,
+  })));
+  let envRT = null, envT = 0;
+
   // ---------------------------------------------------------------- sky dome (gradient + sun + moon + stars)
   const skyU = {
     uZenith: { value: C(PAL.day[0]) }, uHorizon: { value: C(PAL.day[1]) }, uSunDir: { value: new THREE.Vector3() },
@@ -140,26 +157,13 @@ export function createWorld(canvas, game) {
         float gn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
           return mix(mix(gh(i), gh(i+vec2(1,0)), f.x), mix(gh(i+vec2(0,1)), gh(i+vec2(1,1)), f.x), f.y); }
         float gf(vec2 p){ return gn(p) * .55 + gn(p * 2.03 + 7.1) * .3 + gn(p * 4.1 + 3.7) * .15; }
-        vec2 grassStrokes(vec2 g, float seed){   // short painted blades lying flat: x = coverage, y = how near the tip
-          vec2 id = floor(g); float best = 0., tipv = 0.;
-          for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
-            vec2 c = id + vec2(float(i), float(j));
-            vec2 ctr = c + .5 + (vec2(gh(c + seed), gh(c + seed + 3.1)) - .5) * .8;
-            float a = gh(c + seed + 5.7) * 6.2832, L = .45 + gh(c + seed + 8.3) * .3;
-            vec2 dir = vec2(cos(a), sin(a)), p0 = ctr - dir * L * .5;
-            float t = clamp(dot(g - p0, dir) / L, 0., 1.);
-            float d = length(g - (p0 + dir * L * t)), w = .11 * (1. - t * .85);
-            float b = smoothstep(w, w * .35, d);
-            if (b > best) { best = b; tipv = t; }
-          }
-          return vec2(best, tipv);
-        }
         uniform sampler2D uSoil; uniform vec3 uSoilInfo;
         float soilAt(vec2 q){ vec2 uv = (q - uSoilInfo.xy) / uSoilInfo.z;
           if (any(lessThan(uv, vec2(0.))) || any(greaterThan(uv, vec2(1.)))) return 0.;
           return smoothstep(.44, .56, texture2D(uSoil, uv).r); }   // crisp: switches right at the tile edge
         float gEdge(vec2 q){ return .82 + (gf(q * .045) - .5) * .14 + (gf(q * .35 + 3.3) - .5) * .16 + (gn(q * 1.7) - .5) * .05; }`;
   const patchU = { uPatchC: { value: new THREE.Vector2() }, uPatchR: { value: 0 } };
+  const wetU = { value: 0 };   // 0 dry .. 1 soaked: rain darkens the ground and makes it shine
   const PATCH = 64, PATCH_SEG = 256;
   const waterLU = { value: 0 }, caustU = { value: 1 };   // water level + sunlight for the seabed caustics
   // which farm tiles are soil: the ground under a soil bed sinks and turns to dirt, so no grass pokes up between beds
@@ -170,10 +174,11 @@ export function createWorld(canvas, game) {
   const soilU = { uSoil: { value: soilTex }, uSoilInfo: { value: new THREE.Vector3(ORIGIN, ORIGIN_Z, GRID * TILE) } };
   world.setSoil = (k, on) => { const v = on ? 255 : 0; if (soilData[k] !== v) { soilData[k] = v; soilTex.needsUpdate = true; } };
   function groundMat(detail) {
-    const mat = new THREE.MeshToonMaterial({ gradientMap: mats.static.gradientMap });
+    const mat = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0 });   // lit physically so the texture normals and wet sheen read
     if (detail) mat.defines = { GROUND_DETAIL: '' };
     mat.onBeforeCompile = sh => {
-      Object.assign(sh.uniforms, patchU, { uH: { value: htex }, uCTime: uniforms.uTime, uWaterL: waterLU, uCaust: caustU, ...soilU });
+      Object.assign(sh.uniforms, patchU, { uH: { value: htex }, uCTime: uniforms.uTime, uWaterL: waterLU, uCaust: caustU, uWet: wetU, ...soilU },
+        Object.fromEntries(Object.entries(groundTex).map(([k, t]) => ['t' + k, { value: t }])));
       sh.uniforms.uHInfo = { value: new THREE.Vector3(heights.off, heights.step, heights.n) };
       sh.vertexShader = sh.vertexShader
         .replace('#include <common>', `#include <common>
@@ -218,14 +223,16 @@ export function createWorld(canvas, game) {
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <common>', `#include <common>
           varying vec3 vGW; varying vec3 vGN; varying float vBaseH; varying float vPath;
-          uniform vec2 uPatchC; uniform float uPatchR; uniform float uCTime, uWaterL, uCaust;
-          ${NOISE}`)
+          uniform vec2 uPatchC; uniform float uPatchR; uniform float uCTime, uWaterL, uCaust, uWet;
+          uniform sampler2D tgrassA, tgrassD, tsoilA, tsoilD, tsandA, tsandD;
+          ${NOISE}
+          ${TILE_GLSL}`)
         .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
           #ifndef GROUND_DETAIL
             if (max(abs(vGW.x - uPatchC.x), abs(vGW.z - uPatchC.y)) < uPatchR - .3) discard;   // the detail mesh is drawn here
           #endif`)
         .replace('#include <color_fragment>', `#include <color_fragment>
-        float gBump = 0.;
+        float gBump = 0., gRough = 1., gWetF = 0.; vec2 gTexN = vec2(0.);
         {
           vec2 q = vGW.xz; float h = vBaseH, slope = 1. - clamp(vGN.y, 0., 1.);
           float big = gf(q * .045), mid = gf(q * .21), fine = gn(q * 2.7);
@@ -238,16 +245,15 @@ export function createWorld(canvas, game) {
           grass = mix(grass, vec3(.62, .68, .32), smoothstep(.6, .8, gf(q * .02 + 11.)) * .6);
           grass = mix(grass, vec3(.58, .64, .3), near * .45);           // drier where it meets the sand
           grass *= .78 + clump * .3 + fine * .08;
-          // painted blades (two sizes), lighter tips, clover patches with a few white flowers; fades out with distance
-          vec2 bl = grassStrokes(q * 7.5, 0.), bl2 = grassStrokes(q * 13. + 4.7, 9.);
-          float bFade = 1. - smoothstep(9., 28., length(vGW - cameraPosition));
-          float blade = max(bl.x, bl2.x * .8), tip = max(bl.y * bl.x, bl2.y * bl2.x);
-          grass *= 1. + (blade - .5) * .16 * bFade;
-          grass = mix(grass, grass * vec3(1.2, 1.17, .88), tip * .5 * bFade);
-          float clover = smoothstep(.6, .75, gf(q * .38 + 20.)) * (.6 + gn(q * 6.) * .4);
-          grass = mix(grass, grass * vec3(.82, .95, .85), clover * .5);
-          vec2 cc = floor(q * 4.), cfr = fract(q * 4.) - .5 + (vec2(gh(cc + 2.), gh(cc + 4.)) - .5) * .6;
-          grass = mix(grass, vec3(.97, .96, .88), smoothstep(.6, .7, clover) * step(.88, gh(cc + 7.)) * smoothstep(.07, .02, length(cfr)) * bFade);
+          // baked textures (1 m tiles): the procedural colour above now only tints them at large scale
+          float tk = smoothstep(.35, .65, gn(q * .31 + 17.));
+          vec3 gTex = pow(tileAlbedo(tgrassA, q * .5, tk).rgb, vec3(1. / 2.2));
+          vec3 gDat = tileData(tgrassD, q * .5, tk);
+          grass = gTex * clamp(grass / vec3(.36, .55, .21), .55, 1.6);
+          vec3 sTex = pow(tileAlbedo(tsandA, q * .7, tk).rgb, vec3(1. / 2.2));
+          vec3 sDat = tileData(tsandD, q * .7, tk);
+          vec3 eTex = pow(tileAlbedo(tsoilA, q * .8, tk).rgb, vec3(1. / 2.2));
+          vec3 eDat = tileData(tsoilD, q * .8, tk);
           // sand: grain, wind ripples, dunes, pebble and shell speckles, a wet band at the waterline
           vec2 wd = vec2(.83, .55);
           float warp = gf(q * .3) * 5.;
@@ -261,12 +267,13 @@ export function createWorld(canvas, game) {
           sand = mix(sand, mix(vec3(.6, .53, .44), vec3(.99, .96, .9), gh(cell + 1.)), speck * .55 * (1. - near));
           sand = mix(sand, vec3(.8, .71, .5), near * .45);              // sandy soil under the first grass
           sand = mix(sand, vec3(.74, .62, .43), smoothstep(.55, .25, h) * .8);
+          sand *= mix(vec3(1.), sTex / vec3(.85, .77, .59), 1.8) * .84;   // grain contrast up, bright sand toned down so it doesn't blow out
           float toGrass = smoothstep(edge - .02, edge + .02, h);
           vec3 seabed = mix(vec3(.80, .72, .52), vec3(.70, .66, .50), mid);
           vec3 rock = mix(vec3(.47, .46, .42), vec3(.62, .61, .55), gf(q * .3)) * (.9 + fine * .12);
           vec3 c = mix(sand, grass, toGrass);
           float soilM = soilAt(q);
-          c = mix(c, vec3(.34, .23, .15) * (.9 + fine * .15), soilM);   // dark earth under (and between) the soil beds
+          c = mix(c, eTex * .85, soilM);   // dark earth under (and between) the soil beds
           c = mix(seabed, c, smoothstep(.05, .3, h));
           float low = 1. - smoothstep(6., 24., h + (big - .5) * 10.);      // grass holds on steeper ground in the foothills
           float rockAmt = max(smoothstep(.42 + low * .2, .6 + low * .2, slope + (mid - .5) * .2), smoothstep(22., 30., h + mid * 6.) * smoothstep(.12, .3, slope));
@@ -274,7 +281,7 @@ export function createWorld(canvas, game) {
           // the mountain trail: packed earth with worn edges and pebbles
           float trail = smoothstep(.15, .65, vPath + (gn(q * 1.9) - .5) * .35);
           vec3 dirt = mix(vec3(.52, .4, .28), vec3(.66, .54, .38), mid) * (.88 + fine * .16);
-          dirt = mix(dirt, vec3(.72, .68, .6), speck * .6);
+          dirt = mix(dirt, vec3(.72, .68, .6), speck * .6) * eTex / vec3(.34, .24, .16) * .62;
           c = mix(c, dirt, trail);
           rockAmt *= 1. - trail;
           // under the water: tinted by it, with rippling caustic light in the sun
@@ -287,10 +294,30 @@ export function createWorld(canvas, game) {
             c *= mix(vec3(1.), vec3(.78, .93, .95), smoothstep(0., 1.2, uw));
             c += vec3(.95, 1., .92) * ca * .38 * smoothstep(0., .2, uw) * exp(-uw * .6) * uCaust;
           }
+          // texture normals + roughness, mixed the same way as the colours
+          float sandW = (1. - toGrass) * (1. - soilM), grassW = toGrass * (1. - soilM);
+          vec3 dat = vec3(sDat.xy * 2.2, sDat.z) * sandW + gDat * grassW + eDat * soilM;
+          dat = mix(dat, eDat, trail);
+          float under = smoothstep(.05, .3, h);
+          gTexN = dat.xy * (1. - rockAmt) * under;
+          gRough = mix(.95, max(dat.z, .82), under * (1. - rockAmt));   // matte: grass and dry soil barely reflect the sky
+          float wetSand = smoothstep(.55, .25, h) * sandW;      // the wash zone stays damp: darker and shiny
+          float wet = max(wetSand, uWet * (1. - rockAmt * .5));
+          c *= 1. - wet * .32;
+          gRough = mix(gRough, .28, wet * .85); gWetF = wet;
           diffuseColor.rgb = pow(c, vec3(2.2));   // picked as sRGB, lit in linear
-          gBump = mix(rip * .02 + dune * .06, clump * .03 + blade * bFade * .012, toGrass) * (1. - rockAmt) * (1. - soilM) * smoothstep(.1, .35, h);
+          gBump = mix(rip * .02 + dune * .06, clump * .03, toGrass) * (1. - rockAmt) * (1. - soilM) * smoothstep(.1, .35, h);
         }`)
+        .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+        roughnessFactor = gRough;`)
+        .replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>
+        material.specularColor *= mix(.25, 1., gWetF); material.specularF90 = mix(.25, 1., gWetF);   // dry ground: little sky sheen`)
         .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        {   // baked texture normal: tilt the ground normal (world space) by the texture's x/z slope
+          vec2 tn = gTexN * 1.15;
+          vec3 wn = normalize(vGN * sqrt(max(1. - dot(tn, tn), .05)) + vec3(tn.x, 0., tn.y));
+          normal = normalize((viewMatrix * vec4(wn, 0.)).xyz);
+        }
         {   // bump from gBump using screen-space derivatives (no textures)
           vec3 sp = -vViewPosition, sx = dFdx(sp), sy = dFdy(sp);
           vec3 r1 = cross(sy, normal), r2 = cross(normal, sx);
@@ -667,6 +694,11 @@ export function createWorld(canvas, game) {
   const size = new THREE.Vector2(innerWidth, innerHeight);
   const composer = new EffectComposer(renderer);
   const renderPass = new RenderPass(scene, camera);
+  // ambient occlusion: soft contact shadow where things meet the ground, in furrows, under leaves
+  const ao = new GTAOPass(scene, camera, size.x, size.y);
+  ao.updateGtaoMaterial({ radius: 0.7, distanceExponent: 1.4, thickness: 1.2, scale: 1.15, samples: 12 });
+  ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 12 });
+  ao.blendIntensity = 0.85;
   const godU = { tDiffuse: { value: null }, uSun: { value: new THREE.Vector2(0.5, 0.5) }, uStrength: { value: 0 }, uTint: { value: C('#ffe2b0') } };
   const godRays = new ShaderPass({
     uniforms: godU,
@@ -738,6 +770,7 @@ export function createWorld(canvas, game) {
   });
   const output = new OutputPass();
   composer.addPass(renderPass);
+  composer.addPass(ao);
   composer.addPass(godRays);
   composer.addPass(bloom);
   composer.addPass(outline);
@@ -750,8 +783,8 @@ export function createWorld(canvas, game) {
     quality = q === 'low' ? 'low' : 'high';
     const hi = quality === 'high';
     renderer.setPixelRatio(hi ? Math.min(devicePixelRatio, 1.75) : 1);
-    godRays.enabled = hi; bloom.enabled = hi;
-    const ms = hi ? 2048 : 1024;
+    godRays.enabled = hi; bloom.enabled = hi; ao.enabled = hi;
+    const ms = hi ? 4096 : 1024;
     if (sun.shadow.mapSize.x !== ms) { sun.shadow.mapSize.set(ms, ms); sun.shadow.map?.dispose(); sun.shadow.map = null; }
     renderer.shadowMap.type = hi ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
     world.resize();
@@ -836,6 +869,15 @@ export function createWorld(canvas, game) {
     const [zen, hor, sunCol, hSky, hGround] = pal;
 
     skyU.uZenith.value.copy(zen); skyU.uHorizon.value.copy(hor);
+    envT -= dt;
+    if (envT <= 0) {   // refresh the reflected sky every couple of seconds (it changes slowly)
+      envT = 2;
+      envU.uZen.value.copy(zen); envU.uHor.value.copy(hor); envU.uGround.value.copy(hGround); envU.uSunDir.value.copy(world.sunDir); envU.uSunCol.value.copy(sunCol).multiplyScalar(dayF);
+      envRT?.dispose();
+      envRT = pmrem.fromScene(envScene, 0, 0.1, 100);
+      scene.environment = envRT.texture;
+    }
+    scene.environmentIntensity = lerp(0.12, 0.45, dayF) * (1 - wx.dark * 0.4);
     skyU.uSunDir.value.copy(world.sunDir); skyU.uSunCol.value.copy(sunCol);
     skyU.uDay.value = dayF; skyU.uCloudy.value = wx.dark;
     scene.fog.color.copy(hor);
@@ -848,9 +890,9 @@ export function createWorld(canvas, game) {
     const lightDir = useMoon ? focus.copy(world.sunDir).negate() : focus.copy(world.sunDir);
     const elev = Math.max(0.12, lightDir.y);
     sun.color.copy(L);
-    sun.intensity = (useMoon ? 0.95 * smooth(-0.02, -0.15, sunUp) : 2.7 * smooth(-0.02, 0.18, sunUp)) * (1 - wx.dark * 0.7);
+    sun.intensity = (useMoon ? 0.95 * smooth(-0.02, -0.15, sunUp) : 3.0 * smooth(-0.02, 0.18, sunUp)) * (1 - wx.dark * 0.7);
     hemi.color.copy(hSky); hemi.groundColor.copy(hGround);
-    hemi.intensity = lerp(0.55, 1.15, dayF) * (1 - wx.dark * 0.25) + flashV * 1.5;
+    hemi.intensity = lerp(0.55, 0.95, dayF) * (1 - wx.dark * 0.25) + flashV * 1.5;   // less fill: deeper shade, more shape
     const tgt = game.player?.pos && game.mode === 'play' ? game.player.pos : camera.position;
     const fx = Math.round(tgt.x * 2) / 2, fz = Math.round(tgt.z * 2) / 2;
     sun.target.position.set(fx, 0, fz);
@@ -896,6 +938,7 @@ export function createWorld(canvas, game) {
     // rain
     const cp = camera.position;
     rainMat.opacity = wx.rain * 0.42;
+    wetU.value += ((wx.rain > 0.1 ? 1 : 0) - wetU.value) * Math.min(1, dt * (wx.rain > 0.1 ? 0.25 : 0.02));   // soaks in quickly, dries slowly
     rain.visible = wx.rain > 0.02;
     if (rain.visible) {
       rainMat.color.set(wx.acid > 0.3 ? '#b6e37a' : '#c4d6e8');
