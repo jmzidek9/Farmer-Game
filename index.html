@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harvest Haven</title>
+  <meta name="description" content="A cozy first-person farming game on a paradise island. Grow, automate, and play with a friend.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script type="importmap">{"imports":{
+    "three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+  <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js" defer></script>
+</head>
+<body>
+  <canvas id="game" tabindex="-1" aria-label="Harvest Haven, 3D view"></canvas>
+  <div id="ui"></div>
+  <noscript>Harvest Haven needs JavaScript to run.</noscript>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
