@@ -1,6 +1,7 @@
 // Procedural audio (Web Audio API only): island music, ambience, and every sound effect.
 // Music has four moods (day, sunset, night, storm) that crossfade; effects are panned by where they happen.
 import { tileX, tileZ, riverX, RIVER_Z0 } from './terrain.js';
+import { heights } from './assets.js';
 
 const N = n => 440 * Math.pow(2, (n - 69) / 12);          // midi -> Hz
 const rnd = (a, b) => a + Math.random() * (b - a);
@@ -195,6 +196,7 @@ export function createAudio(game) {
     loopNoise('leaves', { bp: 2600, q: 0.6, lpf: 7000, pan: 0.2 });
     loopNoise('rain', { hpf: 1500, lpf: 9000 });
     loopNoise('brook', { bp: 1700, q: 1.6, lpf: 4000, pan: -0.15 });
+    loopNoise('falls', { lpf: 2200 });
   }
   const crickets = Array.from({ length: 5 }, () => ({ f: rnd(3700, 4900), pan: rnd(-0.9, 0.9), t: rnd(0, 2), gap: rnd(0.5, 1.4) }));
   let birdT = 0, waveT = 0, surfT = 2, gullT = 6, frogT = 3, owlT = 30, dropT = 0;
@@ -220,6 +222,11 @@ export function createAudio(game) {
     set('rain', 0.12 * rainy);
     const wn = waterNear(p);
     set('brook', 0.06 * Math.max(0, 1 - wn / 18) * (0.8 + 0.2 * Math.sin(waveT * 3.1)), 1400 + 500 * Math.sin(waveT * 1.7));
+    {   // the waterfall: a steady roar that swells as you walk up to the plunge pool
+      const M = heights?.meta, P = M?.pool || [25, -46], D = M?.fallDir || [0.7, -0.7];
+      const k = Math.max(0, 1 - Math.hypot(p.x - P[0] - D[0] * 8, p.z - P[1] - D[1] * 8) / 55);
+      set('falls', 0.24 * k * k, 900 + 1300 * k);
+    }
     mood = forced || (active && w.kind !== 'drought' ? 'storm' : !isDay ? 'night' : sunset ? 'sunset' : 'day');
 
     // breaking waves: a swell that rises, crashes and hisses back, somewhere along the shore

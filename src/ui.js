@@ -124,7 +124,7 @@ const SKELETON = `
 // ================================================================ createUI
 export function createUI(game) {
   // settings: defaults <- localStorage 'hh-settings' (main.js may already have merged them; harmless)
-  game.settings = Object.assign({ quality: 'high', sens: 1, music: 0.6, sfx: 0.8, name: 'Castaway' }, game.settings || {});
+  game.settings = Object.assign({ quality: 'high', sens: 1, music: 0.6, sfx: 0.8, name: 'Castaway', parallax: 1, sat: 1 }, game.settings || {});
   try { Object.assign(game.settings, JSON.parse(lsGet('hh-settings') || '{}')); } catch { /* bad json */ }
 
   let root = document.getElementById('ui');
@@ -270,7 +270,7 @@ export function createUI(game) {
         if (was >= 0 && was < TUT.length) {
           tutDoneAt = performance.now();
           E.tut.hidden = false;
-          E.tut.innerHTML = `<b class="tut-title">The farm is yours</b><p>Grow, sell and expand. Your goal: repair the wrecked ship in ${SHIP_PARTS.length} steps (${fmtNum(SHIP_COST)} coins in all) and sail home — shop → The ship. The trader at the west pier has orders too.</p>`;
+          E.tut.innerHTML = `<b class="tut-title">The farm is yours</b><p>Grow, sell and expand. Your goal: repair the wrecked ship in ${SHIP_PARTS.length} steps (${fmtNum(SHIP_COST)} coins in all) and sail home — shop → The ship. The trader on the pier has orders too.</p>`;
           E.tut.classList.add('done');
         } else E.tut.hidden = true;
       } else {
@@ -418,7 +418,7 @@ export function createUI(game) {
         case 'achievement': toast(`${f.name}. +${f.gems} gems`, 'good', gemIco()); break;
         case 'quest': banner(f.pid && f.pid !== game.pid ? 'Your friend delivered an order' : 'Order delivered', rewardBits(f.reward || {}).join(', ')); break;
         case 'shipPart': banner(`Ship repair ${f.n} of ${SHIP_PARTS.length} done`, `Next: ${SHIP_PARTS[f.n][0].toLowerCase()} — ${fmtNum(SHIP_PARTS[f.n][2])} coins`); break;
-        case 'trader': banner('The trader’s boat has docked', 'New orders are waiting at the west pier'); break;
+        case 'trader': banner('The trader’s boat has docked', 'New orders are waiting at the pier'); break;
         case 'weather': {
           const D = f.kind && DISASTERS[f.kind];
           if (f.phase === 'warn' && D) banner(D.name, D.warn);
@@ -828,6 +828,10 @@ export function createUI(game) {
             </div>
             <p class="muted small">Low turns off god rays and softens shadows for slower computers.</p>
           </fieldset>
+          <label class="field-label" for="set-parallax">Ground depth (parallax) <output id="o-parallax">${pct(st.parallax ?? 1)}</output></label>
+          <input type="range" id="set-parallax" min="0" max="2" step="0.05" value="${st.parallax ?? 1}" data-f="parallax">
+          <label class="field-label" for="set-sat">Colour saturation <output id="o-sat">${pct(st.sat ?? 1)}</output></label>
+          <input type="range" id="set-sat" min="0" max="2" step="0.05" value="${st.sat ?? 1}" data-f="sat">
           <label class="field-label" for="set-sens">Mouse sensitivity <output id="o-sens">${(+st.sens).toFixed(1)}×</output></label>
           <input type="range" id="set-sens" min="0.2" max="3" step="0.1" value="${st.sens}" data-f="sens">
           <label class="field-label" for="set-music">Music <output id="o-music">${pct(st.music)}</output></label>
@@ -1136,6 +1140,8 @@ export function createUI(game) {
     } else if (t.id === 'set-sens') { st.sens = +t.value; E.panel.querySelector('#o-sens').textContent = st.sens.toFixed(1) + '×'; saveSettings(); }
     else if (t.id === 'set-music') { st.music = +t.value; E.panel.querySelector('#o-music').textContent = Math.round(st.music * 100) + '%'; saveSettings(); }
     else if (t.id === 'set-sfx') { st.sfx = +t.value; E.panel.querySelector('#o-sfx').textContent = Math.round(st.sfx * 100) + '%'; saveSettings(); }
+    else if (t.id === 'set-parallax') { st.parallax = +t.value; E.panel.querySelector('#o-parallax').textContent = Math.round(st.parallax * 100) + '%'; saveSettings(); }
+    else if (t.id === 'set-sat') { st.sat = +t.value; E.panel.querySelector('#o-sat').textContent = Math.round(st.sat * 100) + '%'; saveSettings(); }
   });
   E.panel.addEventListener('change', e => {
     const t = e.target, st = game.settings;

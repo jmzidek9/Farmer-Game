@@ -162,6 +162,8 @@ export function createPlayer(game) {
 
   // ---------------------------------------------------------------- spawn / ground / collision
   function spawn(x = 2, z = 76, yaw = Math.PI) {
+    // a save from the old island layout can put you out at sea: start on the beach instead
+    if (!(Math.hypot(x, z) < 190) || heightAt(x, z) < -1) { x = 2; z = 76; yaw = Math.PI; }
     player.pos.set(x, groundAt(x, z), z);
     player.yaw = yaw; player.pitch = 0;
     vel.set(0, 0, 0); air = 0; vy = 0;
@@ -203,7 +205,7 @@ export function createPlayer(game) {
   }
 
   function free(s, x, z, fx, fz) {
-    if (x * x + z * z > 150 * 150) return false;
+    if (x * x + z * z > 195 * 195) return false;
     if (hitsBuilding(s, x, z) && !hitsBuilding(s, fx, fz)) return false;
     return true;
   }

@@ -11,7 +11,7 @@ const clamp01 = t => Math.max(0, Math.min(1, t));
 const seg = (t, a, b) => clamp01((t - a) / (b - a));
 const wob = (T, f) => Math.sin(T * f) * 0.6 + Math.sin(T * f * 2.31 + 1.7) * 0.3 + Math.sin(T * f * 5.07 + 4.1) * 0.1;
 
-const REEF = new THREE.Vector3(10, 0, 100);         // where the wreck lies
+const REEF = new THREE.Vector3(24, 0, 136);         // where the wreck lies
 const DIR = new THREE.Vector3(-0.3, 0, -0.954).normalize();
 const YAW = Math.atan2(-DIR.z, DIR.x);              // model bow is +X
 const SPEED = 7.5;

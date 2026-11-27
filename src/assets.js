@@ -11,6 +11,7 @@ export const lib = {};
 export let heights = null;   // raw heights.json ({n, step, off, h}) — world.js builds the water depth texture from it
 
 export const uniforms = {
+  uParallax: { value: 1 },   // settings slider: 0 = flat .. 2 = deep
   uTime: { value: 0 },
   uWind: { value: 0.35 },
   uWindDir: { value: new THREE.Vector2(0.8, 0.6).normalize() },
@@ -68,7 +69,7 @@ function toon(params, key, opt) {
 }
 
 // realistic ground textures baked in Blender (tools/make_ground_textures.py): 1 m seamless tiles.
-// *_albedo: colour with crevice shadow; *_data: normal x/y in red/green, roughness in blue.
+// *_albedo: colour with crevice shadow; *_data: normal x/y in red/green, roughness in blue; *_height: for parallax.
 const texLoader = new THREE.TextureLoader();
 function groundTexture(name, color) {
   const t = texLoader.load(window.HH_PACK?.tex?.[name] || `assets/textures/${name}.jpg`);
@@ -78,16 +79,38 @@ function groundTexture(name, color) {
   return t;
 }
 export const groundTex = Object.fromEntries(['grass', 'soil', 'sand'].flatMap(n => [
-  [n + 'A', groundTexture(n + '_albedo', true)], [n + 'D', groundTexture(n + '_data', false)]]));
+  [n + 'A', groundTexture(n + '_albedo', true)], [n + 'D', groundTexture(n + '_data', false)], [n + 'H', groundTexture(n + '_height', false)]]));
 // GLSL: sample a tile twice (second copy turned, scaled, shifted) and blend by noise so the repeat doesn't show.
 // tileData returns the normal already turned back into the first copy's (= world) frame.
 export const TILE_GLSL = `
+  uniform float uParallax;
   const mat2 TILE_R = mat2(.8, .6, -.6, .8);
   vec4 tileAlbedo(sampler2D t, vec2 uv, float k){ return mix(texture2D(t, uv), texture2D(t, TILE_R * uv * .73 + vec2(.31, .57)), k); }
   vec3 tileData(sampler2D t, vec2 uv, float k){
     vec3 a = texture2D(t, uv).rgb, b = texture2D(t, TILE_R * uv * .73 + vec2(.31, .57)).rgb;
     vec2 na = a.rg * 2. - 1., nb = (b.rg * 2. - 1.) * TILE_R;
     return vec3(mix(na, nb, k), mix(a.b, b.b, k));
+  }
+  float tileHeight(sampler2D t, vec2 uv, float k){ return mix(texture2D(t, uv).r, texture2D(t, TILE_R * uv * .73 + vec2(.31, .57)).r, k); }
+  // parallax occlusion: march the view ray down into the height map, return the shifted world position (xz).
+  // q: world xz, sc: texture scale (uv = q * sc), V: surface->eye (world, ground is roughly level),
+  // depth: metres from the top of the texture to the bottom, fade: 0 = off .. 1 = full
+  vec2 pomQ(sampler2D ht, vec2 q, float sc, float k, vec3 V, float depth, float fade){
+    if (fade <= 0. || uParallax <= 0.) return q;
+    float vy = max(V.y, .22);
+    float steps = mix(24., 8., vy);
+    vec2 dir = -V.xz / vy * depth * fade * uParallax;   // total shift for the full depth
+    float layer = 1. / steps, cur = 0.;
+    vec2 off = vec2(0.);
+    float d = 1. - tileHeight(ht, q * sc, k);
+    for (int i = 0; i < 24; i++) {
+      if (float(i) >= steps || cur >= d) break;
+      off += dir * layer; cur += layer;
+      d = 1. - tileHeight(ht, (q + off) * sc, k);
+    }
+    vec2 prev = off - dir * layer;                 // refine between the last two steps
+    float after = d - cur, before = (1. - tileHeight(ht, (q + prev) * sc, k)) - (cur - layer);
+    return q + mix(off, prev, clamp(after / (after - before + 1e-5), 0., 1.));
   }`;
 
 const foliageDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, side: THREE.DoubleSide });
@@ -111,7 +134,8 @@ export const mats = {
 // below 1) go darker and glossy instead of only darker
 mats.soil = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
 mats.soil.onBeforeCompile = sh => {
-  sh.uniforms.tSoilA = { value: groundTex.soilA }; sh.uniforms.tSoilD = { value: groundTex.soilD };
+  sh.uniforms.uParallax = uniforms.uParallax;
+  sh.uniforms.tSoilA = { value: groundTex.soilA }; sh.uniforms.tSoilD = { value: groundTex.soilD }; sh.uniforms.tSoilH = { value: groundTex.soilH };
   sh.vertexShader = sh.vertexShader
     .replace('#include <common>', `#include <common>
       varying vec3 vSW; varying vec3 vSN; varying vec3 vSZ; varying float vSWet, vSFz;`)
@@ -129,14 +153,16 @@ mats.soil.onBeforeCompile = sh => {
       #endif`);
   sh.fragmentShader = sh.fragmentShader
     .replace('#include <common>', `#include <common>
-      varying vec3 vSW; varying vec3 vSN; varying vec3 vSZ; varying float vSWet, vSFz; uniform sampler2D tSoilA, tSoilD;
+      varying vec3 vSW; varying vec3 vSN; varying vec3 vSZ; varying float vSWet, vSFz; uniform sampler2D tSoilA, tSoilD, tSoilH;
       float sh1(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
       float sn1(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
         return mix(mix(sh1(i), sh1(i+vec2(1,0)), f.x), mix(sh1(i+vec2(0,1)), sh1(i+vec2(1,1)), f.x), f.y); }
       ${TILE_GLSL}`)
     .replace('#include <color_fragment>', `#include <color_fragment>
-      vec2 sq = vSW.xz * .8;
       float sk = smoothstep(.35, .65, sn1(vSW.xz * .31 + 5.));
+      float up0 = smoothstep(.2, .7, vSN.y);
+      vec3 sV = normalize(cameraPosition - vSW);
+      vec2 sq = pomQ(tSoilH, vSW.xz, .8, sk, sV, .03, up0 * (1. - smoothstep(5., 14., length(cameraPosition - vSW)))) * .8;
       vec3 sTexC = tileAlbedo(tSoilA, sq, sk).rgb;
       vec3 sDat = tileData(tSoilD, sq, sk);
       float up = smoothstep(.2, .7, vSN.y);

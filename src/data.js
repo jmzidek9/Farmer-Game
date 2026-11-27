@@ -4,7 +4,7 @@ export const TILL_COST = 10;                    // coins to turn one grass tile 
 export const RIVER = [34, 35, 36];              // tile columns the river runs through
 export const BRIDGE_COL = 6;                    // plots at or past column 7 need the bridge
 export const START_PLOTS = [[3, 5], [4, 5], [3, 6], [4, 6]];   // where the grass meets the south beach
-export const PIER = { x: -94, z: 12 };          // west beach, trader's pier end
+export const PIER = { x: -54, z: 91 };          // south beach: the pier's middle; it runs 12 m each way along z, land end north
 export const DAY_LEN = 20 * 60;                 // one day/night cycle
 export const MAX_OFFLINE = 8 * 3600;            // automation catch-up cap
 // the final goal: repair the wreck in three steps and sail home (15, 20 and 25 min of late-game income for the speedrun bot)

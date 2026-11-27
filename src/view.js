@@ -14,7 +14,7 @@ const FOLIAGE = /^(crop_|tree_|palm_|jungle_|bush_|grass_|fern|flower_)/;
 const OBS_TREE = { palm: ['palm_a', 'palm_b', 'palm_c'], jungle: ['jungle_a', 'jungle_b', 'jungle_a'] };
 const ROCKS = ['rock_s', 'rock_m', 'rock_l'];
 const DONKEY = ['donkey_body', 'donkey_body_bags', 'donkey_body_cart'];
-const TRADER_AT = { x: -80, z: 14 };
+const TRADER_AT = { x: -52, z: 77 };   // just inland of the pier's land end (PIER.z - 14)
 
 // scratch objects (never allocate in the frame loop)
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _s = new THREE.Vector3();
@@ -994,7 +994,7 @@ export function createView(game) {
   }
 
   // ------------------------------------------------------------ trader NPC + quest board at the pier's land end
-  const trader = { g: null, board: null, yaw: PI / 2, ph: 0 };
+  const trader = { g: null, board: null, yaw: PI, ph: 0 };
   if (!game.trader) game.trader = { ...TRADER_AT };
   {
     const T = game.trader, y = heightAt(T.x, T.z);
@@ -1002,16 +1002,16 @@ export function createView(game) {
     if (trader.g) { trader.g.position.set(T.x, y, T.z); trader.g.rotation.y = trader.yaw; }
     trader.proxy = proxy({ kind: 'trader' }, 0.9, 2.1, 0.9);
     placeProxy(trader.proxy, T.x, y, T.z, trader.yaw);
-    const bx = T.x - 0.6, bz = T.z + 3.0, by = heightAt(bx, bz) - 0.03;
+    const bx = T.x + 3.0, bz = T.z + 0.6, by = heightAt(bx, bz) - 0.03;
     trader.board = getTemp('quest_board');
-    if (trader.board) { trader.board.position.set(bx, by, bz); trader.board.rotation.y = PI / 2 - 0.25; }
+    if (trader.board) { trader.board.position.set(bx, by, bz); trader.board.rotation.y = PI - 0.25; }
     trader.bproxy = proxy({ kind: 'board' }, 2.3, 2.5, 0.7);
-    placeProxy(trader.bproxy, bx, by, bz, PI / 2 - 0.25);
+    placeProxy(trader.bproxy, bx, by, bz, PI - 0.25);
   }
   function stepTrader(dt, time) {
     if (!trader.g) return;
     const T = game.trader, dx = _cam.x - T.x, dz = _cam.z - T.z;
-    const target = dx * dx + dz * dz < 81 ? Math.atan2(dx, dz) : PI / 2;
+    const target = dx * dx + dz * dz < 81 ? Math.atan2(dx, dz) : PI;
     trader.yaw = dampAngle(trader.yaw, target, 3, dt);
     trader.g.rotation.y = trader.yaw;
     const br = 1 + Math.sin(time * 1.6) * 0.012;

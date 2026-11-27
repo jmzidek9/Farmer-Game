@@ -4,6 +4,7 @@
 # rendered straight down with an orthographic camera. Two seamless JPEGs per surface:
 #   <name>_albedo.jpg  colour with the crevice shadows (ambient occlusion) baked in
 #   <name>_data.jpg    R,G = surface normal x,y (0.5 = flat), B = roughness
+#   <name>_height.jpg  height (white = top), for parallax occlusion; HEIGHT below gives the range in metres
 import bpy, math, os, sys
 import numpy as np
 
@@ -67,15 +68,18 @@ def wrapped(x, y, r):
 
 
 def heightfield(geo, n, h, cols, rough):
-    """A 1 m grid (n x n cells, seamless) with heights h[n, n] and colours cols[n, n, 3]."""
-    xs = np.arange(n + 1) / n
+    """A 1 m grid (n x n cells, seamless) with heights h[n, n] and colours cols[n, n, 3]. It runs a few percent
+    past the tile on every side (wrapped), so the render's edge pixels and the AO rays never see empty space."""
+    m = max(4, n // 16)
+    xs = np.arange(-m, n + m + 1) / n
     X, Y = np.meshgrid(xs, xs, indexing='xy')
-    H = np.pad(h, ((0, 1), (0, 1)), mode='wrap')
-    C = np.pad(cols, ((0, 1), (0, 1), (0, 0)), mode='wrap').reshape(-1, 3)
-    R = np.pad(rough, ((0, 1), (0, 1)), mode='wrap').ravel() if np.ndim(rough) else rough
+    H = np.pad(h, ((m, m + 1), (m, m + 1)), mode='wrap')
+    C = np.pad(cols, ((m, m + 1), (m, m + 1), (0, 0)), mode='wrap').reshape(-1, 3)
+    R = np.pad(rough, ((m, m + 1), (m, m + 1)), mode='wrap').ravel() if np.ndim(rough) else rough
     v = np.stack([X.ravel(), Y.ravel(), H.ravel()], 1)
-    i = np.arange(n)[:, None] * (n + 1) + np.arange(n)[None, :]
-    a, b, c, d = i, i + 1, i + n + 1, i + n + 2
+    w = n + 2 * m
+    i = np.arange(w)[:, None] * (w + 1) + np.arange(w)[None, :]
+    a, b, c, d = i, i + 1, i + w + 1, i + w + 2
     faces = np.concatenate([np.stack([a, b, d], -1).reshape(-1, 3), np.stack([a, d, c], -1).reshape(-1, 3)])
     geo.add(v, faces, C, R)
 
@@ -125,6 +129,7 @@ def reset():
     sc.render.resolution_percentage = 100
     sc.render.film_transparent = False
     sc.render.dither_intensity = 0
+    sc.cycles.filter_width = 0.01   # box filter: samples stay inside each pixel, nothing from beyond the tile edge leaks in
     sc.render.image_settings.file_format = 'JPEG'
     sc.render.image_settings.quality = 92
     world = bpy.data.worlds.new('w'); world.color = (0, 0, 0); sc.world = world
@@ -133,7 +138,10 @@ def reset():
     return sc
 
 
-def material(kind, ao_dist):
+HEIGHT = {'grass': (-0.004, 0.05), 'soil': (-0.004, 0.02), 'sand': (-0.006, 0.006)}   # metres at black / white in <name>_height.jpg
+
+
+def material(kind, ao_dist, hr=(0, 1)):
     m = bpy.data.materials.new(kind)
     m.use_nodes = True
     nt = m.node_tree; N = nt.nodes; L = nt.links
@@ -149,6 +157,12 @@ def material(kind, ao_dist):
         mul = N.new('ShaderNodeVectorMath'); mul.operation = 'MULTIPLY'
         L.new(col.outputs['Color'], mul.inputs[0]); L.new(mr.outputs['Result'], mul.inputs[1])
         L.new(mul.outputs[0], em.inputs['Color'])
+    elif kind == 'height':
+        geo = N.new('ShaderNodeNewGeometry'); sep = N.new('ShaderNodeSeparateXYZ')
+        L.new(geo.outputs['Position'], sep.inputs[0])
+        mr = N.new('ShaderNodeMapRange'); mr.inputs['From Min'].default_value = hr[0]; mr.inputs['From Max'].default_value = hr[1]
+        L.new(sep.outputs['Z'], mr.inputs['Value'])
+        L.new(mr.outputs['Result'], em.inputs['Color'])
     else:   # data: normal x,y remapped to 0..1, roughness in blue
         geo = N.new('ShaderNodeNewGeometry')
         flip = N.new('ShaderNodeMath'); flip.operation = 'MULTIPLY_ADD'
@@ -167,8 +181,8 @@ def material(kind, ao_dist):
 
 
 def render(sc, name, ao_dist):
-    for kind in ('albedo', 'data'):
-        m = material(kind, ao_dist)
+    for kind in ('albedo', 'data', 'height'):
+        m = material(kind, ao_dist, HEIGHT[name])
         for ob in sc.collection.objects:
             if ob.type == 'MESH':
                 ob.data.materials.clear(); ob.data.materials.append(m)
